@@ -9,6 +9,7 @@ const INLINE_EVAL_HIT = {
   flag: "-c",
   argv: ["python3", "-c", "print(1)"],
 };
+const fakeSecretOutput = "OPENAI_API_KEY=sk-proj-redaction-canary-1234567890";
 
 const preparedPlan = vi.hoisted(() => ({
   argv: ["bun", "./script.ts"],
@@ -457,16 +458,20 @@ describe("executeNodeHostCommand", () => {
     expect(callGatewayToolMock).not.toHaveBeenCalled();
   });
 
-  it("redacts secret-shaped node stdout before returning results", async () => {
-    const fakeSecretOutput = "OPENAI_API_KEY=sk-proj-redaction-canary-1234567890";
+  it.each([
+    ["stdout", { stdout: `${fakeSecretOutput}\n`, stderr: "", error: "" }],
+    ["stderr", { stdout: "", stderr: `${fakeSecretOutput}\n`, error: "" }],
+    ["error", { stdout: "", stderr: "", error: `${fakeSecretOutput}\n` }],
+  ] as const)("redacts secret-shaped node %s before returning results", async (_field, payload) => {
     callGatewayToolMock.mockImplementationOnce(
       async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
         if (method === "node.invoke" && params?.command === "system.run") {
           return {
             payload: {
               success: true,
-              stdout: `${fakeSecretOutput}\n`,
-              stderr: "",
+              stdout: payload.stdout,
+              stderr: payload.stderr,
+              error: payload.error,
               exitCode: 0,
               timedOut: false,
             },

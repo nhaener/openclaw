@@ -986,6 +986,32 @@ function shouldFailClosedInterpreterPreflight(command: string): {
   };
 }
 
+function buildExecRunningResult(params: {
+  warningText?: string;
+  sessionId: string;
+  pid?: number;
+  startedAt: number;
+  cwd?: string;
+  tail: string;
+}): AgentToolResult<ExecToolDetails> {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `${params.warningText ?? ""}Command still running (session ${params.sessionId}, pid ${params.pid ?? "n/a"}). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.`,
+      },
+    ],
+    details: redactSecrets({
+      status: "running",
+      sessionId: params.sessionId,
+      pid: params.pid,
+      startedAt: params.startedAt,
+      cwd: params.cwd,
+      tail: redactToolPayloadText(params.tail),
+    }),
+  };
+}
+
 async function validateScriptFileForShellBleed(params: {
   command: string;
   workdir: string;
@@ -1663,24 +1689,16 @@ export function createExecTool(
 
       return new Promise<AgentToolResult<ExecToolDetails>>((resolve, reject) => {
         const resolveRunning = () =>
-          resolve({
-            content: [
-              {
-                type: "text",
-                text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
-                  run.session.pid ?? "n/a"
-                }). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.`,
-              },
-            ],
-            details: {
-              status: "running",
+          resolve(
+            buildExecRunningResult({
+              warningText: getWarningText(),
               sessionId: run.session.id,
               pid: run.session.pid ?? undefined,
               startedAt: run.startedAt,
               cwd: run.session.cwd,
               tail: run.session.tail,
-            },
-          });
+            }),
+          );
 
         const onYieldNow = () => {
           if (yieldTimer) {
@@ -1743,6 +1761,7 @@ export const execTool = createExecTool();
 
 export const __testing = {
   buildExecForegroundResult,
+  buildExecRunningResult,
   parseOpenClawChannelsLoginShellCommand,
   validateScriptFileForShellBleed,
 };

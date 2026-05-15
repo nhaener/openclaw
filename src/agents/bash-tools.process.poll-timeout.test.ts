@@ -195,6 +195,32 @@ test("process log redacts secret-shaped output before returning results", async 
   expect(resultText(log)).toContain("OPENAI_API_KEY=sk-pro…7890");
 });
 
+test("process list redacts secret-shaped command and tail details", async () => {
+  const sessionId = "sess-redact-list";
+  const processTool = createProcessTool();
+  const session = createProcessSessionFixture({
+    id: sessionId,
+    command: `echo ${fakeSecretOutput}`,
+    backgrounded: true,
+  });
+  addSession(session);
+  appendOutput(session, "stdout", `${fakeSecretOutput}\n`);
+
+  const listed = await processTool.execute("toolcall-redact-list", {
+    action: "list",
+  });
+  const details = listed.details as { sessions?: Array<{ command?: string; tail?: string }> };
+  const listedSession = details.sessions?.find((entry) =>
+    entry.command?.includes("OPENAI_API_KEY"),
+  );
+
+  expect(resultText(listed)).not.toContain(fakeSecretOutput);
+  expect(JSON.stringify(details)).not.toContain(fakeSecretOutput);
+  expect(resultText(listed)).toContain("OPENAI_API_KEY=sk-pro…7890");
+  expect(listedSession?.command).toContain("OPENAI_API_KEY=***");
+  expect(listedSession?.tail).toContain("OPENAI_API_KEY=***");
+});
+
 test("process poll exposes adaptive retryInMs for repeated no-output polls", async () => {
   const sessionId = "sess-retry";
   const { processTool } = createProcessSessionHarness(sessionId);

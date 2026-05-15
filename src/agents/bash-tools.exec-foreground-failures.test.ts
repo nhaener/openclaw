@@ -77,6 +77,21 @@ describe("exec foreground failures", () => {
     expect(details.aggregated).toContain("OPENAI_API_KEY=sk-pro…7890");
   });
 
+  it("redacts secret-shaped output from background exec details tail", () => {
+    const result = __testing.buildExecRunningResult({
+      sessionId: "sess-redact-background",
+      pid: 12345,
+      startedAt: Date.now(),
+      cwd: "/tmp",
+      tail: `${fakeSecretOutput}\n`,
+    });
+
+    const details = result.details as { status?: string; tail?: string };
+    expect(details.status).toBe("running");
+    expect(details.tail).not.toContain(fakeSecretOutput);
+    expect(details.tail).toContain("OPENAI_API_KEY=***");
+  });
+
   it("rejects invalid host values before launching a command", async () => {
     const tool = createExecTool({
       security: "full",
