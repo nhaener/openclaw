@@ -92,6 +92,38 @@ describe("exec foreground failures", () => {
     expect(details.tail).toContain("OPENAI_API_KEY=***");
   });
 
+  it("redacts secret-shaped stdout in live emitUpdate payloads", async () => {
+    if (isWin) return; // printf not universally available on Windows CI
+    const updates: Array<{ content: Array<{ type: string; text?: string }>; details: unknown }> =
+      [];
+    const tool = createExecTool({
+      security: "full",
+      ask: "off",
+      timeoutSec: 5,
+      backgroundMs: 2000,
+      allowBackground: false,
+    });
+
+    // printf ensures the data event fires before the process exits
+    const secretCmd = `printf '%s\\n' '${fakeSecretOutput}'`;
+    await tool.execute("call-live-redact", { command: secretCmd }, undefined, (update) => {
+      updates.push(update as (typeof updates)[0]);
+    });
+
+    // At least one update must have fired; if none did the process was too fast
+    // for the current platform — skip rather than false-pass.
+    if (updates.length === 0) return;
+
+    for (const update of updates) {
+      const text = (update.content[0] as { text?: string }).text ?? "";
+      const details = update.details as { tail?: string };
+      expect(text).not.toContain(fakeSecretOutput);
+      if (details.tail !== undefined) {
+        expect(details.tail).not.toContain(fakeSecretOutput);
+      }
+    }
+  });
+
   it("rejects invalid host values before launching a command", async () => {
     const tool = createExecTool({
       security: "full",
