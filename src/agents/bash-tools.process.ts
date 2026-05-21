@@ -67,6 +67,10 @@ function redactProcessToolDetails<T>(details: T): T {
   return redactSecrets(details);
 }
 
+function redactProcessSessionName(command: string): string {
+  return redactSecrets(deriveSessionName(command));
+}
+
 type RunningSessionRuntime = {
   stdinWritable: boolean;
   waitingForInput: boolean;
@@ -279,7 +283,7 @@ export function createProcessTool(
               runtimeMs: Date.now() - s.startedAt,
               cwd: s.cwd,
               command: s.command,
-              name: deriveSessionName(s.command),
+              name: redactProcessSessionName(s.command),
               tail: s.tail,
               truncated: s.truncated,
               stdinWritable: runtime.stdinWritable,
@@ -299,7 +303,7 @@ export function createProcessTool(
               runtimeMs: s.endedAt - s.startedAt,
               cwd: s.cwd,
               command: s.command,
-              name: deriveSessionName(s.command),
+              name: redactProcessSessionName(s.command),
               tail: s.tail,
               truncated: s.truncated,
               exitCode: s.exitCode ?? undefined,
@@ -386,11 +390,11 @@ export function createProcessTool(
         text: string,
       ): AgentToolResult<unknown> => ({
         content: [{ type: "text", text }],
-        details: {
+        details: redactProcessToolDetails({
           status: "running",
           sessionId: params.sessionId,
-          name: deriveSessionName(session.command),
-        },
+          name: redactProcessSessionName(session.command),
+        }),
       });
 
       switch (params.action) {
@@ -421,7 +425,7 @@ export function createProcessTool(
                   sessionId: params.sessionId,
                   exitCode: scopedFinished.exitCode ?? undefined,
                   aggregated: scopedFinished.aggregated,
-                  name: deriveSessionName(scopedFinished.command),
+                  name: redactProcessSessionName(scopedFinished.command),
                 }),
               };
             }
@@ -483,7 +487,7 @@ export function createProcessTool(
               sessionId: params.sessionId,
               exitCode: exited ? exitCode : undefined,
               aggregated: scopedSession.aggregated,
-              name: deriveSessionName(scopedSession.command),
+              name: redactProcessSessionName(scopedSession.command),
               ...(runtime ? runningSessionInputDetails(runtime) : {}),
               ...(typeof retryInMs === "number" ? { retryInMs } : {}),
             }),
@@ -528,7 +532,7 @@ export function createProcessTool(
                 totalLines,
                 totalChars,
                 truncated: scopedSession.truncated,
-                name: deriveSessionName(scopedSession.command),
+                name: redactProcessSessionName(scopedSession.command),
                 ...runningSessionInputDetails(runtime),
               }),
             };
@@ -558,7 +562,7 @@ export function createProcessTool(
                 truncated: scopedFinished.truncated,
                 exitCode: scopedFinished.exitCode ?? undefined,
                 exitSignal: scopedFinished.exitSignal ?? undefined,
-                name: deriveSessionName(scopedFinished.command),
+                name: redactProcessSessionName(scopedFinished.command),
               }),
             };
           }
@@ -668,10 +672,10 @@ export function createProcessTool(
                   : `Killed session ${params.sessionId}.`,
               },
             ],
-            details: {
+            details: redactProcessToolDetails({
               status: "failed",
-              name: scopedSession ? deriveSessionName(scopedSession.command) : undefined,
-            },
+              name: scopedSession ? redactProcessSessionName(scopedSession.command) : undefined,
+            }),
           };
         }
 
@@ -722,10 +726,10 @@ export function createProcessTool(
                     : `Removed session ${params.sessionId}.`,
                 },
               ],
-              details: {
+              details: redactProcessToolDetails({
                 status: "failed",
-                name: scopedSession ? deriveSessionName(scopedSession.command) : undefined,
-              },
+                name: scopedSession ? redactProcessSessionName(scopedSession.command) : undefined,
+              }),
             };
           }
           if (scopedFinished) {
