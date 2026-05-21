@@ -49,11 +49,6 @@ export function registerAgentCommands(program: Command, args: { agentChannelOpti
     .option("--deliver", "Send the agent's reply back to the selected channel", false)
     .option("--json", "Output result as JSON", false)
     .option(
-      "--embedded-fallback",
-      "Allow local embedded fallback when the Gateway agent call fails or times out",
-      false,
-    )
-    .option(
       "--timeout <seconds>",
       "Override agent command timeout (seconds, default 600 or config value)",
     )
