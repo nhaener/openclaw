@@ -62,6 +62,7 @@ type AgentCliOpts = {
   runId?: string;
   extraSystemPrompt?: string;
   local?: boolean;
+  embeddedFallback?: boolean;
 };
 
 function protectJsonStdout(opts: Pick<AgentCliOpts, "json">): void {
@@ -116,6 +117,19 @@ function isGatewayAgentEmbeddedFallbackError(err: unknown): boolean {
 
 function createGatewayTimeoutFallbackSessionId(): string {
   return `${GATEWAY_TIMEOUT_FALLBACK_SESSION_PREFIX}${randomUUID()}`;
+}
+
+function shouldUseEmbeddedFallback(opts: AgentCliOpts): boolean {
+  if (opts.embeddedFallback === true) {
+    return true;
+  }
+  return opts.json !== true;
+}
+
+function formatEmbeddedFallbackDisabledError(err: unknown): Error {
+  return new Error(
+    `Gateway agent call failed and embedded fallback is disabled for JSON output. Pass --embedded-fallback to opt in to local fallback. Cause: ${String(err)}`,
+  );
 }
 
 function createGatewayTimeoutFallbackSession(agentId?: string): {
@@ -262,7 +276,17 @@ export async function agentCliCommand(opts: AgentCliOpts, runtime: RuntimeEnv, d
   try {
     return await agentViaGatewayCommand(opts, runtime);
   } catch (err) {
-    if (isGatewayAgentTimeoutError(err)) {
+    const gatewayTimeout = isGatewayAgentTimeoutError(err);
+    const gatewayFallbackError = isGatewayAgentEmbeddedFallbackError(err);
+    if (!gatewayTimeout && !gatewayFallbackError) {
+      throw err;
+    }
+
+    if (!shouldUseEmbeddedFallback(opts)) {
+      throw formatEmbeddedFallbackDisabledError(err);
+    }
+
+    if (gatewayTimeout) {
       const fallbackSession = createGatewayTimeoutFallbackSession(opts.agent);
       runtime.error?.(
         `EMBEDDED FALLBACK: Gateway agent timed out; running embedded agent with fresh session ${fallbackSession.sessionId}: ${String(err)}`,
@@ -283,10 +307,6 @@ export async function agentCliCommand(opts: AgentCliOpts, runtime: RuntimeEnv, d
         runtime,
         deps,
       );
-    }
-
-    if (!isGatewayAgentEmbeddedFallbackError(err)) {
-      throw err;
     }
 
     runtime.error?.(

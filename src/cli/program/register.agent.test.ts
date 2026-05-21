@@ -122,6 +122,17 @@ describe("registerAgentCommands", () => {
     expect(deps).toEqual({ deps: true });
   });
 
+  it("forwards embedded fallback opt-in for JSON agent automation", async () => {
+    await runCli(["agent", "--message", "hi", "--json", "--embedded-fallback"]);
+
+    const [options, callRuntime, deps] = commandCall(agentCliCommandMock);
+    expect((options as { message?: string }).message).toBe("hi");
+    expect((options as { json?: boolean }).json).toBe(true);
+    expect((options as { embeddedFallback?: boolean }).embeddedFallback).toBe(true);
+    expect(callRuntime).toBe(runtime);
+    expect(deps).toEqual({ deps: true });
+  });
+
   it("runs agents add and computes hasFlags based on explicit options", async () => {
     await runCli(["agents", "add", "alpha"]);
     const [alphaOptions, alphaRuntime, alphaFlags] = commandCall(agentsAddCommandMock, 0);

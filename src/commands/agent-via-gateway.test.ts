@@ -344,6 +344,38 @@ describe("agentCliCommand", () => {
     });
   });
 
+  it("does not fall back to embedded agent for JSON gateway transport errors by default", async () => {
+    await withTempStore(async () => {
+      callGateway.mockRejectedValue(createGatewayClosedError());
+
+      await expect(
+        agentCliCommand({ message: "hi", to: "+1555", json: true }, jsonRuntime),
+      ).rejects.toThrow("embedded fallback is disabled for JSON output");
+
+      expect(callGateway).toHaveBeenCalledTimes(1);
+      expect(agentCommand).not.toHaveBeenCalled();
+      expect(
+        mockMessages(jsonRuntime.error).some((message) => message.includes("EMBEDDED FALLBACK")),
+      ).toBe(false);
+    });
+  });
+
+  it("does not fall back to embedded agent for JSON gateway timeouts by default", async () => {
+    await withTempStore(async () => {
+      callGateway.mockRejectedValue(createGatewayTimeoutError());
+
+      await expect(
+        agentCliCommand({ message: "hi", to: "+1555", json: true }, jsonRuntime),
+      ).rejects.toThrow("embedded fallback is disabled for JSON output");
+
+      expect(callGateway).toHaveBeenCalledTimes(1);
+      expect(agentCommand).not.toHaveBeenCalled();
+      expect(
+        mockMessages(jsonRuntime.error).some((message) => message.includes("EMBEDDED FALLBACK")),
+      ).toBe(false);
+    });
+  });
+
   it("uses a fresh embedded session when gateway agent times out", async () => {
     await withTempStore(async () => {
       callGateway.mockRejectedValue(createGatewayTimeoutError());
@@ -444,7 +476,10 @@ describe("agentCliCommand", () => {
         } as unknown as Awaited<ReturnType<typeof AgentCommand>>;
       });
 
-      const result = await agentCliCommand({ message: "hi", to: "+1555", json: true }, jsonRuntime);
+      const result = await agentCliCommand(
+        { message: "hi", to: "+1555", json: true, embeddedFallback: true },
+        jsonRuntime,
+      );
 
       expect(agentCommand).toHaveBeenCalledTimes(1);
       const fallbackOpts = requireRecord(
