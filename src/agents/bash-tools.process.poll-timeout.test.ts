@@ -11,9 +11,19 @@ import { createProcessTool } from "./bash-tools.process.js";
 import { processSchema } from "./bash-tools.schemas.js";
 
 const fakeSecretOutput = "OPENAI_API_KEY=sk-proj-redaction-canary-1234567890";
+const fakeStandaloneSecretToken = "sk-proj-redaction-canary-abcdefghijklmnopqrstuvwxyz1234567890";
+const fakeStandaloneSecretCommand = `runner ${fakeStandaloneSecretToken} --mode test`;
+const redactedStandaloneSecretMarker = "sk-pro…7890";
 
 function resultText(result: Awaited<ReturnType<ReturnType<typeof createProcessTool>["execute"]>>) {
   return (result.content[0] as { text?: string }).text ?? "";
+}
+
+function expectStandaloneSecretRedacted(value: string) {
+  expect(value).not.toContain(fakeStandaloneSecretToken);
+  expect(value).not.toContain("redaction-canary");
+  expect(value).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+  expect(value).toContain(redactedStandaloneSecretMarker);
 }
 
 afterEach(() => {
@@ -210,7 +220,7 @@ test("process list redacts secret-shaped command and tail details", async () => 
   const processTool = createProcessTool();
   const session = createProcessSessionFixture({
     id: sessionId,
-    command: `echo ${fakeSecretOutput}`,
+    command: fakeStandaloneSecretCommand,
     backgrounded: true,
   });
   addSession(session);
@@ -219,16 +229,38 @@ test("process list redacts secret-shaped command and tail details", async () => 
   const listed = await processTool.execute("toolcall-redact-list", {
     action: "list",
   });
-  const details = listed.details as { sessions?: Array<{ command?: string; tail?: string }> };
-  const listedSession = details.sessions?.find((entry) =>
-    entry.command?.includes("OPENAI_API_KEY"),
-  );
+  const details = listed.details as {
+    sessions?: Array<{ sessionId?: string; command?: string; name?: string; tail?: string }>;
+  };
+  const listedSession = details.sessions?.find((entry) => entry.sessionId === sessionId);
+  const serializedDetails = JSON.stringify(details);
 
   expect(resultText(listed)).not.toContain(fakeSecretOutput);
-  expect(JSON.stringify(details)).not.toContain(fakeSecretOutput);
-  expect(resultText(listed)).toContain("OPENAI_API_KEY=");
-  expect(listedSession?.command).toContain("OPENAI_API_KEY=***");
+  expect(serializedDetails).not.toContain(fakeSecretOutput);
+  expectStandaloneSecretRedacted(resultText(listed));
+  expectStandaloneSecretRedacted(serializedDetails);
+  expect(listedSession?.command).toContain(redactedStandaloneSecretMarker);
+  expect(listedSession?.name).toContain(redactedStandaloneSecretMarker);
   expect(listedSession?.tail).toContain("OPENAI_API_KEY=***");
+});
+
+test("process poll redacts secret-shaped command before deriving details name", async () => {
+  const sessionId = "sess-redact-poll-name";
+  const processTool = createProcessTool();
+  const session = createProcessSessionFixture({
+    id: sessionId,
+    command: fakeStandaloneSecretCommand,
+    backgrounded: true,
+  });
+  addSession(session);
+  markExited(session, 0, null, "completed");
+
+  const poll = await pollSession(processTool, "toolcall-redact-poll-name", sessionId);
+  const serializedDetails = JSON.stringify(poll.details);
+
+  expect(resultText(poll)).not.toContain(fakeStandaloneSecretToken);
+  expect(serializedDetails).not.toContain(fakeStandaloneSecretToken);
+  expectStandaloneSecretRedacted(serializedDetails);
 });
 
 test("process write redacts secret-shaped command-derived details name", async () => {
@@ -236,7 +268,7 @@ test("process write redacts secret-shaped command-derived details name", async (
   const processTool = createProcessTool();
   const session = createProcessSessionFixture({
     id: sessionId,
-    command: `echo ${fakeSecretOutput}`,
+    command: fakeStandaloneSecretCommand,
     backgrounded: true,
   });
   attachWritableStdin(session);
@@ -249,9 +281,10 @@ test("process write redacts secret-shaped command-derived details name", async (
   });
   const details = written.details as { name?: string };
 
-  expect(resultText(written)).not.toContain(fakeSecretOutput);
-  expect(JSON.stringify(details)).not.toContain(fakeSecretOutput);
-  expect(details.name).toContain("OPENAI_API_KEY=");
+  expect(resultText(written)).not.toContain(fakeStandaloneSecretToken);
+  expect(JSON.stringify(details)).not.toContain(fakeStandaloneSecretToken);
+  expectStandaloneSecretRedacted(JSON.stringify(details));
+  expect(details.name).toContain(redactedStandaloneSecretMarker);
 });
 
 test("process poll exposes adaptive retryInMs for repeated no-output polls", async () => {

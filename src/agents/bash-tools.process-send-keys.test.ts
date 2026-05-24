@@ -2,7 +2,16 @@ import { expect, test } from "vitest";
 import { createProcessSessionFixture } from "./bash-process-registry.test-helpers.js";
 import { handleProcessSendKeys, type WritableStdin } from "./bash-tools.process-send-keys.js";
 
-const fakeSecretOutput = "OPENAI_API_KEY=sk-proj-redaction-canary-1234567890";
+const fakeStandaloneSecretToken = "sk-proj-redaction-canary-abcdefghijklmnopqrstuvwxyz1234567890";
+const fakeStandaloneSecretCommand = `runner ${fakeStandaloneSecretToken} --mode test`;
+const redactedStandaloneSecretMarker = "sk-pro…7890";
+
+function expectStandaloneSecretRedacted(value: string) {
+  expect(value).not.toContain(fakeStandaloneSecretToken);
+  expect(value).not.toContain("redaction-canary");
+  expect(value).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+  expect(value).toContain(redactedStandaloneSecretMarker);
+}
 
 function createWritableStdinStub(): WritableStdin {
   return {
@@ -58,7 +67,7 @@ test("process send-keys redacts secret-shaped command-derived details name", asy
     sessionId: "sess-redact-send-keys-name",
     session: createProcessSessionFixture({
       id: "sess-redact-send-keys-name",
-      command: `echo ${fakeSecretOutput}`,
+      command: fakeStandaloneSecretCommand,
       backgrounded: true,
     }),
     stdin: createWritableStdinStub(),
@@ -66,7 +75,8 @@ test("process send-keys redacts secret-shaped command-derived details name", asy
   });
   const details = result.details as { name?: string };
 
-  expect((result.content[0] as { text?: string }).text).not.toContain(fakeSecretOutput);
-  expect(JSON.stringify(details)).not.toContain(fakeSecretOutput);
-  expect(details.name).toContain("OPENAI_API_KEY=");
+  expect((result.content[0] as { text?: string }).text).not.toContain(fakeStandaloneSecretToken);
+  expect(JSON.stringify(details)).not.toContain(fakeStandaloneSecretToken);
+  expectStandaloneSecretRedacted(JSON.stringify(details));
+  expect(details.name).toContain(redactedStandaloneSecretMarker);
 });
