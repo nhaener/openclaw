@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import {
   resolveBootstrapProfileScopesForRole,
@@ -132,8 +133,34 @@ type DevicePairingStateFile = {
 const PENDING_TTL_MS = 5 * 60 * 1000;
 const OPERATOR_ROLE = "operator";
 const OPERATOR_SCOPE_PREFIX = "operator.";
+const PAIRING_READ_RETRY_ATTEMPTS = 3;
+const PAIRING_READ_RETRY_DELAY_MS = 10;
 
 const withLock = createAsyncLock();
+
+function isFileChangedDuringReadError(error: unknown): boolean {
+  let current: unknown = error;
+  while (current instanceof Error) {
+    if (current.message.includes("File changed during read")) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+async function readPairingJsonIfExists<T>(filePath: string): Promise<T | undefined> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readJsonIfExists<T>(filePath);
+    } catch (error) {
+      if (attempt >= PAIRING_READ_RETRY_ATTEMPTS || !isFileChangedDuringReadError(error)) {
+        throw error;
+      }
+      await delay(PAIRING_READ_RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+}
 
 export function formatDevicePairingForbiddenMessage(result: DevicePairingForbiddenResult): string {
   switch (result.reason) {
@@ -154,8 +181,8 @@ export function formatDevicePairingForbiddenMessage(result: DevicePairingForbidd
 async function loadState(baseDir?: string): Promise<DevicePairingStateFile> {
   const { pendingPath, pairedPath } = resolvePairingPaths(baseDir, "devices");
   const [pending, paired] = await Promise.all([
-    readJsonIfExists<unknown>(pendingPath),
-    readJsonIfExists<unknown>(pairedPath),
+    readPairingJsonIfExists<unknown>(pendingPath),
+    readPairingJsonIfExists<unknown>(pairedPath),
   ]);
   const state: DevicePairingStateFile = {
     pendingById: coercePairingStateRecord<DevicePairingPendingRequest>(pending),

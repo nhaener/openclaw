@@ -167,6 +167,38 @@ export function resolveAgentModelFallbacksOverride(
   return Array.isArray(raw.fallbacks) ? raw.fallbacks : undefined;
 }
 
+export type SubagentModelConfigSelectionSource = "subagent" | "agent" | "default-subagent";
+
+export type SubagentModelConfigSelectionResult = {
+  raw: AgentModelConfig;
+  source: SubagentModelConfigSelectionSource;
+};
+
+export function resolveSubagentModelConfigSelectionResult(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  agentConfigOverride?: Pick<AgentConfig, "model" | "subagents">;
+}): SubagentModelConfigSelectionResult | undefined {
+  const agentConfig =
+    params.agentConfigOverride ??
+    (params.agentId ? resolveAgentConfig(params.cfg, params.agentId) : undefined);
+  const candidates: SubagentModelConfigSelectionResult[] = [
+    ...(agentConfig?.subagents?.model
+      ? [{ raw: agentConfig.subagents.model, source: "subagent" as const }]
+      : []),
+    ...(agentConfig?.model ? [{ raw: agentConfig.model, source: "agent" as const }] : []),
+    ...(params.cfg.agents?.defaults?.subagents?.model
+      ? [
+          {
+            raw: params.cfg.agents.defaults.subagents.model,
+            source: "default-subagent" as const,
+          },
+        ]
+      : []),
+  ];
+  return candidates.find((candidate) => resolvePrimaryStringValue(candidate.raw));
+}
+
 export function resolveFallbackAgentId(params: {
   agentId?: string | null;
   sessionKey?: string | null;
