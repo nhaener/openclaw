@@ -3780,7 +3780,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(secondInputText).toContain("continue from there");
   });
 
-  it("routes AGENTS.md natively and MEMORY.md through tools", async () => {
+  it("routes AGENTS.md natively and keeps MEMORY.md in bounded context", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const agentsGuidance = "Follow AGENTS guidance.";
     const soulGuidance = "Soul voice goes here.";
@@ -3825,10 +3825,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(collaborationInstructions).toContain(userProfile);
     expect(collaborationInstructions).toContain("## Memory Recall");
     expect(collaborationInstructions).toContain("MEMORY.md + memory/*.md");
-    expect(collaborationInstructions).toContain("OpenClaw Workspace Memory");
-    expect(collaborationInstructions).toContain(
-      "MEMORY.md exists in the active agent workspace as a memory file, not an instruction file",
-    );
+    expect(collaborationInstructions).not.toContain("OpenClaw Workspace Memory");
     expect(collaborationInstructions).toContain("memory_search");
     expect(collaborationInstructions).toContain("memory_get");
     expect(collaborationInstructions).toContain(
@@ -3838,20 +3835,19 @@ describe("runCodexAppServerAttempt", () => {
       "If the needed memory tool is deferred and not currently callable, use `tool_search` to load it, then call that memory tool.",
     );
     expect(collaborationInstructions).not.toContain(memorySummary);
-    expect(inputText).not.toContain("OpenClaw runtime context for this turn:");
-    expect(inputText).not.toContain("does not override Codex system/developer instructions");
-    expect(inputText).not.toContain("not developer policy");
+    expect(inputText).toContain("OpenClaw runtime context for this turn:");
+    expect(inputText).toContain("OpenClaw Workspace Context");
     expect(inputText).not.toContain(soulGuidance);
     expect(inputText).not.toContain(identityGuidance);
     expect(inputText).not.toContain(userProfile);
-    expect(inputText).not.toContain(memorySummary);
+    expect(inputText).toContain(memorySummary);
     expect(inputText).not.toContain("OpenClaw Workspace Memory");
     expect(inputText).not.toContain("MEMORY.md exists in the active agent workspace");
     expect(inputText).not.toContain("memory_search");
     expect(inputText).not.toContain("memory_get");
-    expect(inputText).not.toContain("Codex loads AGENTS.md natively");
+    expect(inputText).toContain("Codex loads AGENTS.md natively");
     expect(inputText).not.toContain(agentsGuidance);
-    expect(inputText).toBe("hello");
+    expect(inputText).not.toBe("hello");
     expect(systemPromptReport.systemPrompt.chars).toBe(
       [threadDeveloperInstructions, collaborationInstructions].join("\n\n").length,
     );
@@ -3875,7 +3871,7 @@ describe("runCodexAppServerAttempt", () => {
     });
     expect(fileStats.get("MEMORY.md")).toMatchObject({
       rawChars: memorySummary.length,
-      injectedChars: 0,
+      injectedChars: memorySummary.length,
       truncated: false,
     });
     expect(fileStats.get("AGENTS.md")).toMatchObject({
@@ -3885,6 +3881,34 @@ describe("runCodexAppServerAttempt", () => {
       truncated: null,
     });
   });
+
+  it("excludes root MEMORY.md from group Codex context even when memory tools are available", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const memorySummary = "Private root memory must not reach group context.";
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), memorySummary);
+    registerMemoryPromptForTest();
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
+      createRuntimeDynamicTool("memory_search"),
+      createRuntimeDynamicTool("memory_get"),
+    ]);
+    const params = createParams(sessionFile, workspaceDir);
+    params.chatType = "group";
+    params.disableTools = false;
+    setCodexTestModelSupportsTools(params, true);
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    setAgentWorkspaceForTest(params, workspaceDir);
+
+    const { collaborationInstructions, inputText, systemPromptReport } =
+      await buildCodexTurnContextForTest(params, workspaceDir);
+
+    expect(inputText).not.toContain(memorySummary);
+    expect(collaborationInstructions).not.toContain(memorySummary);
+    expect(
+      systemPromptReport.injectedWorkspaceFiles.find((file) => file.name === "MEMORY.md"),
+    ).toBe(undefined);
+  });
+
   it("adds memory recall guidance when dated memory notes exist without root MEMORY.md", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const datedMemory = "User avoids Chase cards while over 5/24.";
@@ -3933,11 +3957,11 @@ describe("runCodexAppServerAttempt", () => {
       workspaceDir,
     );
     expect(collaborationInstructions).not.toContain("## Memory Recall");
-    expect(collaborationInstructions).toContain("OpenClaw Workspace Memory");
+    expect(collaborationInstructions).not.toContain("OpenClaw Workspace Memory");
     expect(collaborationInstructions).not.toContain("Use `tool_search` first");
     expect(collaborationInstructions).not.toContain(memorySummary);
-    expect(inputText).toBe("hello");
-    expect(inputText).not.toContain(memorySummary);
+    expect(inputText).not.toBe("hello");
+    expect(inputText).toContain(memorySummary);
   });
   it("sends turn-scoped workspace instructions through Codex app-server payloads", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
@@ -4100,7 +4124,7 @@ describe("runCodexAppServerAttempt", () => {
       truncated: false,
     });
   });
-  it("routes MEMORY.md through memory_get when search is unavailable", async () => {
+  it("keeps MEMORY.md injected when search is unavailable", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const memorySummary = "Memory summary goes here.";
     await fs.mkdir(workspaceDir, { recursive: true });
@@ -4117,9 +4141,9 @@ describe("runCodexAppServerAttempt", () => {
     expect(inputText).not.toContain("OpenClaw Workspace Memory");
     expect(inputText).not.toContain("memory_get");
     expect(inputText).not.toContain("memory_search");
-    expect(inputText).not.toContain(memorySummary);
+    expect(inputText).toContain(memorySummary);
     expect(collaborationInstructions).toContain("## Memory Recall");
-    expect(collaborationInstructions).toContain("OpenClaw Workspace Memory");
+    expect(collaborationInstructions).not.toContain("OpenClaw Workspace Memory");
     expect(collaborationInstructions).toContain("memory_get");
     expect(collaborationInstructions).not.toContain("memory_search");
     expect(collaborationInstructions).not.toContain(memorySummary);
@@ -4128,7 +4152,7 @@ describe("runCodexAppServerAttempt", () => {
     );
     expect(fileStats.get("MEMORY.md")).toMatchObject({
       rawChars: memorySummary.length,
-      injectedChars: 0,
+      injectedChars: memorySummary.length,
       truncated: false,
     });
   });
@@ -4166,7 +4190,56 @@ describe("runCodexAppServerAttempt", () => {
       truncated: true,
     });
   });
-  it("keeps MEMORY.md out of the Codex workspace context budget", async () => {
+  it("keeps root MEMORY.md within the canonical shared bootstrap order", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const memorySummary = "Memory summary survives the Codex bootstrap cap.";
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "Soul guidance ".repeat(120));
+    await fs.writeFile(path.join(workspaceDir, "TOOLS.md"), "Tool guidance ".repeat(120));
+    await fs.writeFile(path.join(workspaceDir, "USER.md"), "User profile ".repeat(120));
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), memorySummary);
+    registerMemoryPromptForTest();
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
+      createRuntimeDynamicTool("memory_search"),
+      createRuntimeDynamicTool("memory_get"),
+    ]);
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    setCodexTestModelSupportsTools(params, true);
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    params.config = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          bootstrapMaxChars: 1000,
+          bootstrapTotalMaxChars: 2000,
+        },
+      },
+    } as EmbeddedRunAttemptParams["config"];
+    setAgentWorkspaceForTest(params, workspaceDir);
+
+    const { inputText, systemPromptReport } = await buildCodexTurnContextForTest(
+      params,
+      workspaceDir,
+    );
+
+    expect(inputText).not.toContain(memorySummary);
+    const fileStats = new Map(
+      systemPromptReport.injectedWorkspaceFiles.map((file) => [file.name, file]),
+    );
+    expect(fileStats.get("MEMORY.md")).toMatchObject({
+      rawChars: memorySummary.length,
+      injectedChars: 0,
+      truncated: true,
+    });
+    const injectedChars = systemPromptReport.injectedWorkspaceFiles.reduce(
+      (sum, file) => sum + file.injectedChars,
+      0,
+    );
+    expect(injectedChars).toBeLessThanOrEqual(2000);
+  });
+
+  it("keeps MEMORY.md bounded inside the Codex workspace context budget", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const memorySummary = "Memory summary ".repeat(300);
     const hookContext = "Hook context survives the memory budget.";
@@ -4207,18 +4280,19 @@ describe("runCodexAppServerAttempt", () => {
     const { collaborationInstructions, inputText, systemPromptReport } =
       await buildCodexTurnContextForTest(params, workspaceDir);
     expect(inputText).not.toContain("OpenClaw Workspace Memory");
-    expect(inputText).not.toContain(memorySummary);
+    expect(inputText).toContain("Memory summary");
     expect(inputText).toContain(hookContext);
-    expect(collaborationInstructions).toContain("OpenClaw Workspace Memory");
+    expect(collaborationInstructions).not.toContain("OpenClaw Workspace Memory");
     expect(collaborationInstructions).not.toContain(memorySummary);
     const fileStats = new Map(
       systemPromptReport.injectedWorkspaceFiles.map((file) => [file.name, file]),
     );
     expect(fileStats.get("MEMORY.md")).toMatchObject({
       rawChars: memorySummary.trimEnd().length,
-      injectedChars: 0,
-      truncated: false,
+      truncated: true,
     });
+    expect(fileStats.get("MEMORY.md")?.injectedChars).toBeGreaterThan(0);
+    expect(fileStats.get("MEMORY.md")?.injectedChars).toBeLessThanOrEqual(1000);
     expect(fileStats.get("ZZZ.md")).toMatchObject({
       rawChars: hookContext.length,
       injectedChars: hookContext.length,
@@ -4228,7 +4302,7 @@ describe("runCodexAppServerAttempt", () => {
 
   it("keeps extra MEMORY.md bootstrap files in Codex workspace context", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
-    const rootMemory = "Root memory should stay tool-routed.";
+    const rootMemory = "Root memory should stay injected.";
     const nestedMemory = "Nested package memory remains prompt context.";
     const nestedMemoryPath = path.join(workspaceDir, "packages/pkg/MEMORY.md");
     await fs.mkdir(path.dirname(nestedMemoryPath), { recursive: true });
@@ -4260,9 +4334,9 @@ describe("runCodexAppServerAttempt", () => {
     const { collaborationInstructions, inputText, systemPromptReport } =
       await buildCodexTurnContextForTest(params, workspaceDir);
     expect(inputText).not.toContain("OpenClaw Workspace Memory");
-    expect(inputText).not.toContain(rootMemory);
+    expect(inputText).toContain(rootMemory);
     expect(inputText).toContain(nestedMemory);
-    expect(collaborationInstructions).toContain("OpenClaw Workspace Memory");
+    expect(collaborationInstructions).not.toContain("OpenClaw Workspace Memory");
     expect(collaborationInstructions).not.toContain(rootMemory);
     expect(collaborationInstructions).not.toContain(nestedMemory);
     const files = systemPromptReport.injectedWorkspaceFiles;
@@ -4272,7 +4346,7 @@ describe("runCodexAppServerAttempt", () => {
     const nestedMemoryStats = files.find((file) => file.path === nestedMemoryPath);
     expect(rootMemoryStats).toMatchObject({
       rawChars: rootMemory.length,
-      injectedChars: 0,
+      injectedChars: rootMemory.length,
       truncated: false,
     });
     expect(nestedMemoryStats).toMatchObject({
