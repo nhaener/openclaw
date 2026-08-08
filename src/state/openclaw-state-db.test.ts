@@ -2992,6 +2992,42 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     expect(columns.map((column) => column.name)).toContain("startup_reason");
   });
 
+  it("keeps v6 subagent announce targets rollback-compatible in payload JSON", () => {
+    const stateDir = createTempStateDir();
+    const database = openOpenClawStateDatabase({
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const databasePath = database.path;
+    database.db
+      .prepare(
+        "INSERT INTO subagent_runs (run_id, child_session_key, requester_session_key, requester_display_key, task, cleanup, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "rollback-compatible-run",
+        "agent:child",
+        "agent:main",
+        "agent:main",
+        "do work",
+        "keep",
+        1,
+        JSON.stringify({ announceTarget: "parent" }),
+      );
+    closeOpenClawStateDatabaseForTest();
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const earlierV6 = new DatabaseSync(databasePath, { readOnly: true });
+    const columns = earlierV6.prepare("PRAGMA table_info(subagent_runs)").all() as Array<{
+      name?: unknown;
+    }>;
+    expect(columns.map((column) => column.name)).not.toContain("announce_target");
+    expect(earlierV6.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+    const row = earlierV6
+      .prepare("SELECT payload_json FROM subagent_runs WHERE run_id = ?")
+      .get("rollback-compatible-run") as { payload_json: string };
+    expect(JSON.parse(row.payload_json)).toMatchObject({ announceTarget: "parent" });
+    earlierV6.close();
+  });
+
   it("adds and backfills Claw package update timestamps in existing state databases", () => {
     const stateDir = createTempStateDir();
     const databasePath = materializeCurrentStateDatabase(stateDir);
