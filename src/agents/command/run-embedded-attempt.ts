@@ -227,6 +227,20 @@ export async function runEmbeddedAgentAttempt(params: {
     modelId: model,
     workspaceDir,
   });
+  let committedMessageToolSourceReply = false;
+  const markMessageToolSourceReplyCommitted = () => {
+    if (committedMessageToolSourceReply) {
+      return;
+    }
+    committedMessageToolSourceReply = true;
+    try {
+      params.opts.onDeliveredMessageToolOnlySourceReply?.();
+    } catch (err) {
+      // The outbound send already committed. Never convert accounting failure
+      // into a model fallback or live-switch replay that can publish twice.
+      log.warn(`message-tool source delivery observer failed: ${String(err)}`);
+    }
+  };
   let liveSwitchMediaTaskIds: ReadonlySet<string> = new Set();
   for (;;) {
     try {
@@ -252,7 +266,8 @@ export async function runEmbeddedAgentAttempt(params: {
       const fallbackRuntimeState: { originRuntime?: "cli" | "embedded" } = {};
       attemptLifecycleState.currentTurnUserMessagePersisted = false;
       let attemptMediaTaskIds = liveSwitchMediaTaskIds;
-      const currentAttemptCommittedCronMedia = () =>
+      const currentAttemptCommittedSideEffect = () =>
+        committedMessageToolSourceReply ||
         Boolean(
           sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
         );
@@ -289,7 +304,7 @@ export async function runEmbeddedAgentAttempt(params: {
         },
         behavior: {
           kind: "command-rpc",
-          hasCommittedSideEffect: currentAttemptCommittedCronMedia,
+          hasCommittedSideEffect: currentAttemptCommittedSideEffect,
         },
         sessionOverride: {
           kind: "reconcile-completed",
@@ -474,7 +489,10 @@ export async function runEmbeddedAgentAttempt(params: {
             runTimeoutOverrideMs,
             runId,
             lifecycleGeneration,
-            opts: params.opts,
+            opts: {
+              ...params.opts,
+              onDeliveredMessageToolOnlySourceReply: markMessageToolSourceReplyCommitted,
+            },
             runContext,
             spawnedBy,
             messageChannel,
@@ -555,8 +573,9 @@ export async function runEmbeddedAgentAttempt(params: {
           throw new ModelSelectionLockedError();
         }
         if (
-          sessionKey &&
-          hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds)
+          committedMessageToolSourceReply ||
+          (sessionKey &&
+            hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds))
         ) {
           throw err;
         }

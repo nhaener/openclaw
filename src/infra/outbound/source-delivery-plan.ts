@@ -145,6 +145,8 @@ export function sourceDeliveryTargetsMatch(
   if (provider && provider !== "message" && provider !== channel) {
     return false;
   }
+  // An accountless receipt uses the trusted current source account. An explicit
+  // account remains authoritative, so a different account can never match.
   if (delivery.accountId && target.accountId && target.accountId !== delivery.accountId) {
     return false;
   }

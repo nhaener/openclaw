@@ -145,6 +145,46 @@ describe("in-process paired-node invocation cancellation", () => {
     expect(handleGatewayRequest).not.toHaveBeenCalled();
   });
 
+  it("joins an aborted final response before a retry-capable caller resumes", async () => {
+    const controller = new AbortController();
+    let releaseSettlement: (() => void) | undefined;
+    const settlementGate = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    handleGatewayRequest.mockImplementation(async (options: GatewayRequestOptions) => {
+      options.respond(true, { status: "accepted" });
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await settlementGate;
+      options.respond(true, { status: "timeout" });
+    });
+
+    let settled = false;
+    const invocation = dispatchGatewayRequestInProcessRaw(
+      "agent",
+      {},
+      {
+        client: null,
+        context: {} as GatewayRequestContext,
+        expectFinal: true,
+        signal: controller.signal,
+        settleOnAbort: true,
+      },
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(handleGatewayRequest).toHaveBeenCalledOnce());
+
+    controller.abort(new Error("gateway request timeout for agent"));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseSettlement?.();
+    await expect(invocation).rejects.toThrow("gateway request timeout for agent");
+    expect(settled).toBe(true);
+  });
+
   it("preserves the legacy in-process request shape when no signal is supplied", async () => {
     handleGatewayRequest.mockImplementation(async (options: GatewayRequestOptions) => {
       options.respond(true, { ok: true });

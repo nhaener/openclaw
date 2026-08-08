@@ -67,6 +67,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
   let yielded = false;
   let didSendViaMessagingTool = false;
   let didDeliverSourceReplyViaMessageTool = false;
+  let didNotifySourceReplyDelivery = false;
   let inFlightUnclassifiedMcpRequests = 0;
   let inFlightMessagingToolCalls = 0;
   const inFlightPreparedMessagingCalls = new Set<McpLoopbackToolCallStart>();
@@ -247,6 +248,15 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
         })
       ) {
         didDeliverSourceReplyViaMessageTool = true;
+        if (!didNotifySourceReplyDelivery) {
+          didNotifySourceReplyDelivery = true;
+          try {
+            context.params.onDeliveredMessageToolOnlySourceReply?.();
+          } catch {
+            // The send already committed. Accounting failures must not turn
+            // the successful tool result into a retryable CLI tool failure.
+          }
+        }
         const payload = extractMessagingToolSourceReplyPayload(params.result);
         if (payload) {
           if (messagingToolSourceReplyPayloads.length >= CLI_MESSAGING_EVIDENCE_MAX_CALLS) {

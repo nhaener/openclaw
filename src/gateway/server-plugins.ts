@@ -224,6 +224,7 @@ type DispatchGatewayMethodInProcessOptions = {
   forceSyntheticClient?: boolean;
   internalDeliveryMediaUrls?: string[];
   internalDeliverySuppressText?: boolean;
+  onDeliveredMessageToolOnlySourceReply?: () => void;
   onAccepted?: (payload: unknown) => void;
   pluginRuntimeOwnerId?: string;
   pluginSubagentRequester?: PluginSubagentRequesterContext;
@@ -234,6 +235,7 @@ type DispatchGatewayMethodInProcessOptions = {
   syntheticScopes?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
+  settleOnAbort?: boolean;
 };
 
 export type { GatewayMethodDispatchResponse } from "./server-in-process-dispatch.js";
@@ -270,6 +272,8 @@ export async function dispatchGatewayMethodInProcessRaw(
     cronRunContinuation: options?.allowSyntheticCronRunContinuation === true,
     internalDeliveryMediaUrls: options?.internalDeliveryMediaUrls,
     internalDeliverySuppressText: options?.internalDeliverySuppressText,
+    onDeliveredMessageToolOnlySourceReply:
+      options?.onDeliveredMessageToolOnlySourceReply,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     ...(options?.pluginSubagentRequester
       ? { pluginSubagentRequester: options.pluginSubagentRequester }
@@ -288,6 +292,7 @@ export async function dispatchGatewayMethodInProcessRaw(
       options?.pluginSubagentRequester ||
       options?.runtimePluginToolGrant ||
       options?.delegatedToolPolicyHandoff ||
+      options?.onDeliveredMessageToolOnlySourceReply ||
       scope?.client?.internal?.delegatedToolPolicyHandoffId
       ? {
           ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
@@ -297,6 +302,8 @@ export async function dispatchGatewayMethodInProcessRaw(
             : {}),
           runtimePluginToolGrant: options?.runtimePluginToolGrant,
           delegatedToolPolicyHandoffId,
+          onDeliveredMessageToolOnlySourceReply:
+            options?.onDeliveredMessageToolOnlySourceReply,
         }
       : undefined,
   );
@@ -316,6 +323,7 @@ export async function dispatchGatewayMethodInProcessRaw(
       requestIdPrefix: "plugin-subagent",
       timeoutMs: options?.timeoutMs,
       ...(options?.signal ? { signal: options.signal } : {}),
+      settleOnAbort: options?.settleOnAbort,
     });
   } finally {
     cancelSubagentCompletionToolHandoff(delegatedToolPolicyHandoffId);

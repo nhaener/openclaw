@@ -190,7 +190,17 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   setActiveSessionSystemPrompt(input.initialSystemPrompt);
   let didDeliverSourceReplyViaMessageTool = false;
   const markSourceReplyDelivered = () => {
+    if (didDeliverSourceReplyViaMessageTool) {
+      return;
+    }
     didDeliverSourceReplyViaMessageTool = true;
+    try {
+      attempt.onDeliveredMessageToolOnlySourceReply?.();
+    } catch (err) {
+      // Delivery already committed. Observer/accounting failures must never
+      // turn a successful tool result into an error that invites a resend.
+      log.warn(`message-tool source delivery observer failed: ${String(err)}`);
+    }
   };
   installMessageToolOnlyTerminalHook({
     agent: activeSession.agent,

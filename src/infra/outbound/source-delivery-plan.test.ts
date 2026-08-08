@@ -129,6 +129,24 @@ describe("source delivery plan", () => {
     expect(outcome.visibleDeliveries[0]?.verifiedTarget).toBe(false);
   });
 
+  it("accepts an accountless receipt from the trusted implicit current account", () => {
+    expect(
+      isVerifiedSourceDeliveryTarget(
+        { tool: "message", provider: "slack", to: "channel:C1" },
+        { channel: "slack", to: "channel:C1", accountId: "bot-a" },
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a receipt from a different explicit account", () => {
+    expect(
+      isVerifiedSourceDeliveryTarget(
+        { tool: "message", provider: "slack", accountId: "bot-b", to: "channel:C1" },
+        { channel: "slack", to: "channel:C1", accountId: "bot-a" },
+      ),
+    ).toBe(false);
+  });
+
   it("keeps verified message-tool delivery separate from source fallback satisfaction", () => {
     const contract = createSourceDeliveryPlan({
       owner: "none",
