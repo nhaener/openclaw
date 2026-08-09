@@ -41,6 +41,8 @@ type AgentTurnStartRequest = {
   principal: AgentTurnPrincipal | null;
   io: AgentTurnIo;
   onRunObserved?: (runId: string) => void;
+  /** Cancellation owned by the request transport. */
+  requestSignal?: AbortSignal;
 };
 
 function createAcceptanceRespond(io: AgentTurnIo): RespondFn {
@@ -103,6 +105,7 @@ export function createAgentTurnService({
     principal,
     io,
     onRunObserved,
+    requestSignal,
   }: AgentTurnStartRequest): Promise<void> => {
     if (replayAgentTurnIfCached({ preflight, context, io })) {
       return;
@@ -559,6 +562,7 @@ export function createAgentTurnService({
       // frame on the existing detached chain after the router returns its acceptance.
       startAgentRunExecution({
         prepared: preparedDispatch,
+        requestSignal,
         mainRestartRecoveryOwnerLease,
         request,
         cfg,

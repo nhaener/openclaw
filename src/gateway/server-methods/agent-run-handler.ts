@@ -17,6 +17,7 @@ export const agentRunHandler: GatewayRequestHandlers["agent"] = async ({
   context,
   client,
   isWebchatConnect,
+  signal,
 }) => {
   const io = createAgentTurnIo(respond);
   if (
@@ -42,5 +43,6 @@ export const agentRunHandler: GatewayRequestHandlers["agent"] = async ({
     principal,
     io,
     onRunObserved,
+    requestSignal: signal,
   });
 };

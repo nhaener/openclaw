@@ -112,6 +112,8 @@ export type GatewayClient = {
     /** Host-owned exact media set for a scoped automatic recovery delivery. */
     internalDeliveryMediaUrls?: string[];
     internalDeliverySuppressText?: boolean;
+    /** Request-local in-process observer; never accepted from Gateway wire params. */
+    onDeliveredMessageToolOnlySourceReply?: () => void;
     /** Plugin-owned tools authorized for this internal subagent run. */
     runtimePluginToolGrant?: RuntimePluginToolGrant;
     /** Opaque in-process subagent-completion capability; never accepted from wire params. */

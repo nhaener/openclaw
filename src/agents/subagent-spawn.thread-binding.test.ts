@@ -19,12 +19,19 @@ const hoisted = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("../channels/plugins/thread-binding-api.js", () => ({
+  resolveBundledChannelThreadBindingDefaultPlacement: () => "child",
+  resolveBundledChannelThreadBindingInboundConversation: () => undefined,
+  loadBundledChannelThreadBindingApi: () => null,
+}));
+
 function firstRegisteredSubagentRun(): {
   controllerSessionKey?: string;
   requesterSessionKey?: string;
   requesterDisplayKey?: string;
   requesterOrigin?: { channel?: string; accountId?: string; to?: string };
   expectsCompletionMessage?: boolean;
+  announceTarget?: string;
   spawnMode?: string;
 } {
   const call = hoisted.registerSubagentRunMock.mock.calls[0]?.[0] as
@@ -34,6 +41,7 @@ function firstRegisteredSubagentRun(): {
         requesterDisplayKey?: string;
         requesterOrigin?: { channel?: string; accountId?: string; to?: string };
         expectsCompletionMessage?: boolean;
+        announceTarget?: string;
         spawnMode?: string;
       }
     | undefined;
@@ -96,6 +104,9 @@ describe("spawnSubagentDirect thread binding delivery", () => {
           source: "test",
           plugin: {
             ...matrixBase,
+            conversationBindings: {
+              defaultTopLevelPlacement: "child",
+            },
             messaging: {
               resolveDeliveryTarget: ({
                 conversationId,
@@ -124,6 +135,7 @@ describe("spawnSubagentDirect thread binding delivery", () => {
       agents: {
         defaults: {
           workspace: os.tmpdir(),
+          thinkingDefault: "off",
         },
         list: [{ id: "main", workspace: "/tmp/workspace-main" }],
       },
@@ -194,6 +206,7 @@ describe("spawnSubagentDirect thread binding delivery", () => {
       agents: {
         defaults: {
           workspace: os.tmpdir(),
+          thinkingDefault: "off",
           subagents: {
             allowAgents: ["bot-alpha"],
           },
@@ -257,6 +270,31 @@ describe("spawnSubagentDirect thread binding delivery", () => {
     expect(registeredRun?.requesterOrigin?.to).toBe(`room:${boundRoom}`);
     expect(registeredRun?.expectsCompletionMessage).toBe(false);
     expect(registeredRun?.spawnMode).toBe("session");
+  });
+
+  it("rejects parent-targeted completion for direct thread-bound spawns", async () => {
+    const result = await spawnSubagentDirect(
+      {
+        task: "reply with a marker",
+        thread: true,
+        mode: "session",
+        context: "isolated",
+        announceTarget: "parent",
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "matrix",
+        agentAccountId: "default",
+        agentTo: "room:!parent:example",
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("cannot be combined with thread=true"),
+    });
+    expect(hoisted.callGatewayMock).not.toHaveBeenCalled();
+    expect(hoisted.registerSubagentRunMock).not.toHaveBeenCalled();
   });
 
   it("uses controller ownership for thread binding while completion routes to owner", async () => {
