@@ -1211,6 +1211,11 @@ async function sendSubagentAnnounceDirectly(params: {
     };
     let directAnnounceResponse: unknown;
     let committedMessageToolDelivery: SubagentAnnounceDeliveryResult | undefined;
+    // Parent-only completions withhold delivery credit until a source-matched
+    // receipt is verified, but a committed message-tool send is still an
+    // external side effect: latch it independently of receipt credit so no
+    // retry path can publish a duplicate.
+    let parentOnlySourceSendLatched = false;
     const commitMessageToolSourceDelivery = () => {
       if (committedMessageToolDelivery) {
         return;
@@ -1227,13 +1232,32 @@ async function sendSubagentAnnounceDirectly(params: {
         // repair accounting, but the model must never resend this message.
       }
     };
+    const latchParentOnlySourceSend = () => {
+      parentOnlySourceSendLatched = true;
+    };
+    const parentOnlyLatchedAmbiguousResult = (): SubagentAnnounceDeliveryResult => ({
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the turn did not settle; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    });
     try {
       directAnnounceResponse = await runAnnounceDeliveryWithRetry({
         operation: params.expectsCompletionMessage
           ? "completion direct announce agent call"
           : "direct announce agent call",
         signal: params.signal,
-        isAttemptAllowed: () => isCompletionDeliveryAllowed() && !committedMessageToolDelivery,
+        // A committed source reply is the delivery boundary; a latched
+        // parent-only send is the same boundary without delivery credit.
+        // Either way the external side effect exists, so another attempt
+        // could publish a duplicate.
+        isAttemptAllowed: () =>
+          isCompletionDeliveryAllowed() &&
+          !committedMessageToolDelivery &&
+          !parentOnlySourceSendLatched,
         run: async () => {
           if (!isCompletionDeliveryAllowed()) {
             throw new SourceOwnerChangedError();
@@ -1259,8 +1283,9 @@ async function sendSubagentAnnounceDirectly(params: {
             expectFinal: true,
             timeoutMs: announceTimeoutMs,
             signal: params.signal,
-            onDeliveredMessageToolOnlySourceReply:
-              requiresMessageToolDelivery && !parentOnlyExternalCompletion
+            onDeliveredMessageToolOnlySourceReply: parentOnlyExternalCompletion
+              ? latchParentOnlySourceSend
+              : requiresMessageToolDelivery
                 ? commitMessageToolSourceDelivery
                 : undefined,
           });
@@ -1269,6 +1294,12 @@ async function sendSubagentAnnounceDirectly(params: {
     } catch (err) {
       if (committedMessageToolDelivery) {
         return committedMessageToolDelivery;
+      }
+      if (parentOnlySourceSendLatched) {
+        // The send committed before the turn settled. Never rethrow into a
+        // path that could redeliver; report the unverified send as
+        // ambiguous so reconciliation waits for a source-matched receipt.
+        return parentOnlyLatchedAmbiguousResult();
       }
       if (err instanceof SourceOwnerChangedError) {
         return sourceOwnerChangedResult();

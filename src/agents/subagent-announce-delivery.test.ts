@@ -1810,6 +1810,121 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("latches a parent-only message-tool send so transient retries cannot duplicate it", async () => {
+    const onDeliveryResult = vi.fn();
+    const transientError = Object.assign(new Error("cron run continuation unavailable"), {
+      gatewayCode: "UNAVAILABLE",
+    });
+    const dispatchGatewayMethodInProcess = vi.fn(
+      async (
+        _method: string,
+        _agentParams: Record<string, unknown>,
+        options?: Parameters<typeof runtimeDispatchGatewayMethodInProcess>[2],
+      ) => {
+        options?.onDeliveredMessageToolOnlySourceReply?.();
+        throw transientError;
+      },
+    ) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-latch",
+      sourceTool: "subagent_announce",
+      onDeliveryResult,
+    });
+
+    // The committed send is an external side effect: it must not be retried
+    // (exactly one dispatch) and must not be credited as verified delivery.
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledOnce();
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the turn did not settle; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    expect(onDeliveryResult).not.toHaveBeenCalledWith(
+      expect.objectContaining({ delivered: true }),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not latch-block retries for a parent-only run that never sent", async () => {
+    const transientError = Object.assign(new Error("cron run continuation unavailable"), {
+      gatewayCode: "UNAVAILABLE",
+    });
+    let calls = 0;
+    const dispatchGatewayMethodInProcess = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw transientError;
+      }
+      return { payloads: [{ text: "NO_REPLY" }] };
+    }) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-no-send-retry",
+      sourceTool: "subagent_announce",
+    });
+
+    // Without a committed send there is no side effect to protect: the
+    // transient failure must still be retried, and the settled NO_REPLY is
+    // rejected for the missing message-tool receipt as before.
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledTimes(2);
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error: "parent-only completion must publish via the message tool",
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("wakes an active parent-only requester with message-tool-only delivery", async () => {
     const dispatchGatewayMethodInProcess = createInProcessGatewayMock({
       result: { payloads: [{ text: "must not be sent automatically" }] },
