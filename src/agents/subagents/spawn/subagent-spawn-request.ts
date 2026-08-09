@@ -102,6 +102,18 @@ export function resolveSubagentSpawnRequest(
     requestedMode: params.mode,
     threadRequested: requestThreadBinding,
   });
+  if (params.announceTarget === "parent" && params.collect) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      'sessions_spawn announceTarget="parent" cannot be combined with collect=true because collector spawns do not send completion messages.',
+    );
+  }
+  if (params.announceTarget === "parent" && requestThreadBinding) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      'sessions_spawn announceTarget="parent" cannot be combined with thread=true because thread-bound spawns are externally visible.',
+    );
+  }
   if (params.collect && (requestThreadBinding || spawnMode === "session")) {
     return rejectSubagentSpawnRequest(
       "error",

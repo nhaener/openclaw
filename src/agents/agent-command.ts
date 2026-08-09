@@ -674,10 +674,14 @@ export async function agentCommandFromIngress(
   runtime: RuntimeEnv = defaultRuntime,
   deps?: CliDeps,
 ) {
-  // Plugin SDK callers may be plain JavaScript. Enforce the private recovery
-  // boundary at runtime so extra or inherited properties cannot author audit identity.
+  // Plugin SDK callers may be plain JavaScript. Enforce private Gateway-only
+  // boundaries at runtime so extra or inherited properties cannot author them.
   return await agentCommandFromIngressInternal(
-    { ...opts, executionIdentityAdmission: undefined },
+    {
+      ...opts,
+      executionIdentityAdmission: undefined,
+      onDeliveredMessageToolOnlySourceReply: undefined,
+    },
     runtime,
     deps,
   );
