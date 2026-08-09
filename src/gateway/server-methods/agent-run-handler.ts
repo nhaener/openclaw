@@ -33,6 +33,7 @@ export const agentRunHandler: GatewayRequestHandlers["agent"] = async ({
   context,
   client,
   isWebchatConnect,
+  signal,
 }) => {
   const preflight = prepareAgentRequestPreflight({ params, respond, context, client });
   if (!preflight) {
@@ -480,6 +481,7 @@ export const agentRunHandler: GatewayRequestHandlers["agent"] = async ({
     gatewayAdmissionTransferred = true;
     startAgentRunExecution({
       prepared: preparedDispatch,
+      requestSignal: signal,
       mainRestartRecoveryOwnerLease,
       request,
       cfg,

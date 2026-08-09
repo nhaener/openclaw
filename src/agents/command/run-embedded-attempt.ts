@@ -51,6 +51,7 @@ import {
   type AgentAttemptLifecycleState,
 } from "./attempt-callbacks.js";
 import { createAgentCommandLifecycle } from "./lifecycle.js";
+import { createMessageToolSourceReplyLatch } from "./message-tool-source-reply-latch.js";
 import { normalizeAgentCommandModelRef } from "./model-ref.js";
 import type { EmbeddedModelSelection } from "./model-selection.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
@@ -227,6 +228,7 @@ export async function runEmbeddedAgentAttempt(params: {
     modelId: model,
     workspaceDir,
   });
+  const sourceReplyLatch = createMessageToolSourceReplyLatch(params.opts);
   let liveSwitchMediaTaskIds: ReadonlySet<string> = new Set();
   for (;;) {
     try {
@@ -252,7 +254,8 @@ export async function runEmbeddedAgentAttempt(params: {
       const fallbackRuntimeState: { originRuntime?: "cli" | "embedded" } = {};
       attemptLifecycleState.currentTurnUserMessagePersisted = false;
       let attemptMediaTaskIds = liveSwitchMediaTaskIds;
-      const currentAttemptCommittedCronMedia = () =>
+      const currentAttemptCommittedSideEffect = () =>
+        sourceReplyLatch.committed() ||
         Boolean(
           sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
         );
@@ -289,7 +292,7 @@ export async function runEmbeddedAgentAttempt(params: {
         },
         behavior: {
           kind: "command-rpc",
-          hasCommittedSideEffect: currentAttemptCommittedCronMedia,
+          hasCommittedSideEffect: currentAttemptCommittedSideEffect,
         },
         sessionOverride: {
           kind: "reconcile-completed",
@@ -474,7 +477,13 @@ export async function runEmbeddedAgentAttempt(params: {
             runTimeoutOverrideMs,
             runId,
             lifecycleGeneration,
-            opts: params.opts,
+            opts: {
+              ...params.opts,
+              onDeliveredMessageToolOnlySourceReply: params.opts
+                .onDeliveredMessageToolOnlySourceReply
+                ? sourceReplyLatch.mark
+                : undefined,
+            },
             runContext,
             spawnedBy,
             messageChannel,
@@ -555,8 +564,8 @@ export async function runEmbeddedAgentAttempt(params: {
           throw new ModelSelectionLockedError();
         }
         if (
-          sessionKey &&
-          hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds)
+          sourceReplyLatch.committed() ||
+          (sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds))
         ) {
           throw err;
         }

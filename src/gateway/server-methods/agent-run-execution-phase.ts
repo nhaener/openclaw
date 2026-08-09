@@ -69,6 +69,8 @@ import type { GatewayRequestHandlerOptions } from "./types.js";
 
 export function startAgentRunExecution(params: {
   prepared: PreparedAgentRunDispatch;
+  /** Cancellation owned by the request transport or in-process dispatcher. */
+  requestSignal?: AbortSignal;
   mainRestartRecoveryOwnerLease?: MainSessionRecoveryOwnerLease;
   request: AgentRunRequest;
   cfg: OpenClawConfig;
@@ -118,8 +120,18 @@ export function startAgentRunExecution(params: {
   ) => Promise<boolean>;
 }): void {
   const { prepared } = params;
+  const abortFromRequest = () => {
+    if (!prepared.activeRunAbort.controller.signal.aborted) {
+      prepared.activeRunAbort.controller.abort(params.requestSignal?.reason);
+    }
+  };
+  params.requestSignal?.addEventListener("abort", abortFromRequest, { once: true });
+  if (params.requestSignal?.aborted) {
+    abortFromRequest();
+  }
   let releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? undefined;
   const cleanupAdmittedRun: typeof prepared.activeRunAbort.cleanup = (options) => {
+    params.requestSignal?.removeEventListener("abort", abortFromRequest);
     prepared.activeRunAbort.cleanup(options);
     prepared.activeGatewayWorkAdmission.release();
     releaseGatewayRootContinuation?.();
@@ -436,6 +448,8 @@ export function startAgentRunExecution(params: {
           ...(executionIdentityAdmission ? { executionIdentityAdmission } : {}),
           internalDeliveryMediaUrls: params.client?.internal?.internalDeliveryMediaUrls,
           internalDeliverySuppressText: params.client?.internal?.internalDeliverySuppressText,
+          onDeliveredMessageToolOnlySourceReply:
+            params.client?.internal?.onDeliveredMessageToolOnlySourceReply,
           suppressPromptPersistence:
             params.requestedPromptPersistenceSuppression ||
             shouldSuppressAgentPromptPersistence({

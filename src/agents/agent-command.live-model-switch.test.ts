@@ -663,12 +663,14 @@ vi.mock("../acp/control-plane/manager.js", () => ({
 }));
 
 let agentCommand: typeof import("./agent-command.js").agentCommand;
+let agentCommandFromIngress: typeof import("./agent-command.js").agentCommandFromIngress;
 let agentCommandFromSystem: typeof import("./agent-command.js").agentCommandFromSystem;
 let agentCommandTesting: typeof import("./agent-command.js").testing;
 
 beforeAll(async () => {
   const mod = await import("./agent-command.js");
   agentCommand ??= mod.agentCommand;
+  agentCommandFromIngress ??= mod.agentCommandFromIngress;
   agentCommandFromSystem ??= mod.agentCommandFromSystem;
   agentCommandTesting ??= mod.testing;
 });
@@ -688,6 +690,13 @@ type FallbackRunnerParams = {
     attempt: number;
     total: number;
   }) => unknown;
+  canFallbackAfterError?: (params: {
+    provider: string;
+    model: string;
+    error: unknown;
+    attempt: number;
+    total: number;
+  }) => boolean | Promise<boolean>;
 };
 
 type ModelSwitchOptions = ConstructorParameters<typeof LiveSessionModelSwitchError>[0];
@@ -3965,6 +3974,121 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         );
       }),
     ).toBe(true);
+  });
+
+  it("does not run another fallback candidate after a CLI source-delivery callback and classified result", async () => {
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      const result = await params.run(params.provider, params.model);
+      expect(
+        params.classifyResult?.({
+          result,
+          provider: params.provider,
+          model: params.model,
+          attempt: 1,
+          total: 2,
+        }),
+      ).toBeUndefined();
+      return { result, provider: params.provider, model: params.model, attempts: [] };
+    });
+    state.runAgentAttemptMock.mockImplementation(
+      async (attempt: { opts?: { onDeliveredMessageToolOnlySourceReply?: () => void } }) => {
+        attempt.opts?.onDeliveredMessageToolOnlySourceReply?.();
+        return makeEmptyResult("openai", "gpt-5.4");
+      },
+    );
+
+    await agentCommand({
+      message: "hello",
+      to: "+1234567890",
+      onDeliveredMessageToolOnlySourceReply,
+    });
+
+    expect(state.runAgentAttemptMock).toHaveBeenCalledOnce();
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
+  });
+
+  it("does not run another fallback candidate after a source-delivery callback and thrown error", async () => {
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    const fallbackError = new Error("CLI fallback failed after delivery");
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      await expect(params.run(params.provider, params.model)).rejects.toThrow(fallbackError);
+      expect(params.canFallbackAfterError).toBeTypeOf("function");
+      expect(
+        await params.canFallbackAfterError?.({
+          provider: params.provider,
+          model: params.model,
+          error: fallbackError,
+          attempt: 1,
+          total: 2,
+        }),
+      ).toBe(false);
+      throw fallbackError;
+    });
+    state.runAgentAttemptMock.mockImplementation(
+      async (attempt: { opts?: { onDeliveredMessageToolOnlySourceReply?: () => void } }) => {
+        attempt.opts?.onDeliveredMessageToolOnlySourceReply?.();
+        throw fallbackError;
+      },
+    );
+
+    await expect(
+      agentCommand({
+        message: "hello",
+        to: "+1234567890",
+        onDeliveredMessageToolOnlySourceReply,
+      }),
+    ).rejects.toThrow(fallbackError);
+
+    expect(state.runAgentAttemptMock).toHaveBeenCalledOnce();
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
+  });
+
+  it("does not restart after a live model switch once the CLI source-delivery callback commits", async () => {
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      return await params.run(params.provider, params.model);
+    });
+    state.runAgentAttemptMock.mockImplementation(
+      async (attempt: { opts?: { onDeliveredMessageToolOnlySourceReply?: () => void } }) => {
+        attempt.opts?.onDeliveredMessageToolOnlySourceReply?.();
+        throw switchError;
+      },
+    );
+
+    await expect(
+      agentCommand({
+        message: "hello",
+        to: "+1234567890",
+        onDeliveredMessageToolOnlySourceReply,
+      }),
+    ).rejects.toThrow(switchError);
+
+    expect(state.runWithModelFallbackMock).toHaveBeenCalledOnce();
+    expect(state.runAgentAttemptMock).toHaveBeenCalledOnce();
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
+  });
+
+  it("strips a caller-injected source-delivery observer at runtime ingress", async () => {
+    setupSuccessfulAttempt();
+    const injectedObserver = vi.fn();
+
+    await agentCommandFromIngress({
+      message: "plugin request",
+      to: "+1234567890",
+      allowModelOverride: false,
+      onDeliveredMessageToolOnlySourceReply: injectedObserver,
+    } as never);
+
+    const attempt = mockCallArg(state.runAgentAttemptMock) as {
+      opts?: { onDeliveredMessageToolOnlySourceReply?: unknown };
+    };
+    expect(attempt.opts?.onDeliveredMessageToolOnlySourceReply).toBeUndefined();
+    expect(injectedObserver).not.toHaveBeenCalled();
   });
 
   it("propagates authProfileId from the switch error to the retried session entry", async () => {

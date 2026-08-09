@@ -265,6 +265,41 @@ describe("spawnSubagentDirect seam flow", () => {
     },
   );
 
+  it("rejects parent completion routing for direct collector spawns before side effects", async () => {
+    hoisted.configOverride = createConfigOverride({ tools: { swarm: true } });
+
+    const result = await spawnSubagentDirect(
+      { task: "collect privately", collect: true, announceTarget: "parent" },
+      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
+    );
+
+    expect(result).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("cannot be combined with collect=true"),
+    });
+    expect(gatewayRequestRecords()).toEqual([]);
+    expect(hoisted.registerSubagentRunMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects parent completion routing for direct thread-bound spawns before side effects", async () => {
+    const result = await spawnSubagentDirect(
+      {
+        task: "reply privately in a thread",
+        thread: true,
+        mode: "session",
+        announceTarget: "parent",
+      },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(result).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("cannot be combined with thread=true"),
+    });
+    expect(gatewayRequestRecords()).toEqual([]);
+    expect(hoisted.registerSubagentRunMock).not.toHaveBeenCalled();
+  });
+
   it("rejects explicit same-agent targets when allowAgents excludes the requester", async () => {
     hoisted.configOverride = createConfigOverride({
       agents: {
