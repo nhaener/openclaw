@@ -226,6 +226,14 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
     didSendViaMessagingTool = true;
     const toolArgs = params.args ?? {};
     const isMessagingSend = isMessagingToolSendAction(params.toolName, toolArgs);
+    if (isMessagingSend) {
+      try {
+        context.params.onCommittedMessagingToolSend?.();
+      } catch {
+        // The send already committed. Observer failures must not turn the
+        // successful tool result into a retryable CLI tool failure.
+      }
+    }
     const content = isMessagingSend ? extractCliMessagingContent(toolArgs, params.result) : {};
     if (isMessagingSend) {
       appendUniqueCliMessagingEvidence(

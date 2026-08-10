@@ -245,6 +245,7 @@ export async function dispatchGatewayMethodInProcessRaw(
     internalDeliveryMediaUrls: options?.internalDeliveryMediaUrls,
     internalDeliverySuppressText: options?.internalDeliverySuppressText,
     onDeliveredMessageToolOnlySourceReply: options?.onDeliveredMessageToolOnlySourceReply,
+    onCommittedMessagingToolSend: options?.onCommittedMessagingToolSend,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     ...(options?.pluginSubagentRequester
       ? { pluginSubagentRequester: options.pluginSubagentRequester }
@@ -264,6 +265,7 @@ export async function dispatchGatewayMethodInProcessRaw(
       options?.runtimePluginToolGrant ||
       options?.delegatedToolPolicyHandoff ||
       options?.onDeliveredMessageToolOnlySourceReply ||
+      options?.onCommittedMessagingToolSend ||
       scope?.client?.internal?.delegatedToolPolicyHandoffId
       ? {
           ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
@@ -274,6 +276,7 @@ export async function dispatchGatewayMethodInProcessRaw(
           runtimePluginToolGrant: options?.runtimePluginToolGrant,
           delegatedToolPolicyHandoffId,
           onDeliveredMessageToolOnlySourceReply: options?.onDeliveredMessageToolOnlySourceReply,
+          onCommittedMessagingToolSend: options?.onCommittedMessagingToolSend,
         }
       : undefined,
   );

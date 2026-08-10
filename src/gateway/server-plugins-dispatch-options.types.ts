@@ -13,6 +13,7 @@ export type DispatchGatewayMethodInProcessOptions = {
   internalDeliveryMediaUrls?: string[];
   internalDeliverySuppressText?: boolean;
   onDeliveredMessageToolOnlySourceReply?: () => void;
+  onCommittedMessagingToolSend?: () => void;
   onAccepted?: (payload: unknown) => void;
   pluginRuntimeOwnerId?: string;
   pluginSubagentRequester?: PluginSubagentRequesterContext;

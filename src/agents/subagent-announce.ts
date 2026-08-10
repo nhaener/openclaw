@@ -42,7 +42,6 @@ import {
 import {
   resolveAnnounceOrigin,
   resolveSubagentCompletionOrigin,
-  type DeliveryContext,
 } from "./subagent-announce-origin.js";
 import {
   applySubagentWaitOutcome,
@@ -529,12 +528,26 @@ export async function runSubagentAnnounceFlow(params: {
       ? candidateCompletionDirectOrigin
       : targetRequesterOrigin;
     const directIdempotencyKey = buildAnnounceIdempotencyKey(announceId);
-    let deliveryResultReported = false;
+    let reportedDelivery: SubagentAnnounceDeliveryResult | undefined;
     const reportDeliveryResult = (delivery: SubagentAnnounceDeliveryResult) => {
-      if (deliveryResultReported) {
-        return;
+      if (reportedDelivery) {
+        // A commit-time ambiguous fence is provisional: only verified
+        // delivery or a stronger terminal disposition may replace it.
+        // Retryable/undefined settled results must never erase the persisted
+        // fence, or restart recovery could re-dispatch a committed send.
+        // Anything already final — including a delivered result — is never
+        // replaced.
+        const provisional =
+          !reportedDelivery.delivered && reportedDelivery.disposition === "ambiguous";
+        const upgrades =
+          delivery.delivered ||
+          delivery.disposition === "intentional_non_delivery" ||
+          delivery.disposition === "permanent_failure";
+        if (!provisional || !upgrades) {
+          return;
+        }
       }
-      deliveryResultReported = true;
+      reportedDelivery = delivery;
       params.onDeliveryResult?.(delivery);
     };
     const delivery = await deliverSubagentAnnouncement({

@@ -681,6 +681,7 @@ export async function agentCommandFromIngress(
       ...opts,
       executionIdentityAdmission: undefined,
       onDeliveredMessageToolOnlySourceReply: undefined,
+      onCommittedMessagingToolSend: undefined,
     },
     runtime,
     deps,

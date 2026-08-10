@@ -114,6 +114,8 @@ export type GatewayClient = {
     internalDeliverySuppressText?: boolean;
     /** Request-local in-process observer; never accepted from Gateway wire params. */
     onDeliveredMessageToolOnlySourceReply?: () => void;
+    /** Request-local in-process observer; never accepted from Gateway wire params. */
+    onCommittedMessagingToolSend?: () => void;
     /** Plugin-owned tools authorized for this internal subagent run. */
     runtimePluginToolGrant?: RuntimePluginToolGrant;
     /** Opaque in-process subagent-completion capability; never accepted from wire params. */
