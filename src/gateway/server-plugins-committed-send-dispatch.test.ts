@@ -1,7 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+type DispatchedClient = {
+  internal?: {
+    syntheticClient?: boolean;
+    onCommittedMessagingToolSend?: () => void;
+  };
+};
+
 const mocks = vi.hoisted(() => ({
-  dispatchGatewayRequestInProcessRaw: vi.fn(async () => ({ ok: true as const, payload: null })),
+  dispatchGatewayRequestInProcessRaw: vi.fn(
+    async (_method: string, _params: unknown, _options?: { client?: DispatchedClient }) => ({
+      ok: true as const,
+      payload: null,
+    }),
+  ),
   getPluginRuntimeGatewayRequestScope: vi.fn((): unknown => undefined),
   getFallbackGatewayContext: vi.fn((): unknown => ({})),
 }));
@@ -22,20 +34,15 @@ vi.mock("./server-plugin-fallback-context.js", () => ({
 
 import { dispatchGatewayMethodInProcessRaw } from "./server-plugins.js";
 
-type DispatchedClient = {
-  internal?: {
-    syntheticClient?: boolean;
-    onCommittedMessagingToolSend?: () => void;
-  };
-};
-
 function dispatchedClient(): DispatchedClient {
   expect(mocks.dispatchGatewayRequestInProcessRaw).toHaveBeenCalledOnce();
-  const options = mocks.dispatchGatewayRequestInProcessRaw.mock.calls[0]?.[2] as {
-    client?: DispatchedClient;
-  };
-  expect(options?.client).toBeTruthy();
-  return options.client as DispatchedClient;
+  const options = mocks.dispatchGatewayRequestInProcessRaw.mock.calls[0]?.[2] ?? {};
+  const client = options.client;
+  expect(client).toBeTruthy();
+  if (!client) {
+    throw new Error("Expected dispatch call options to include a client");
+  }
+  return client;
 }
 
 describe("in-process gateway dispatch commit-callback forwarding", () => {

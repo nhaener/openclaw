@@ -9,10 +9,6 @@ import {
   isModelSelectionLocked,
 } from "../../sessions/model-overrides.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
-import {
-  getGeneratedMediaTaskIdsForSessionKey,
-  hasNewGeneratedMediaTaskForSessionKey,
-} from "../../tasks/task-status-access.js";
 import { createTrajectoryRuntimeRecorder } from "../../trajectory/runtime.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -51,7 +47,7 @@ import {
   type AgentAttemptLifecycleState,
 } from "./attempt-callbacks.js";
 import { createAgentCommandLifecycle } from "./lifecycle.js";
-import { createMessageToolSourceReplyLatch } from "./message-tool-source-reply-latch.js";
+import { createMessageToolCommitObservers } from "./message-tool-commit-observers.js";
 import { normalizeAgentCommandModelRef } from "./model-ref.js";
 import type { EmbeddedModelSelection } from "./model-selection.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
@@ -228,16 +224,11 @@ export async function runEmbeddedAgentAttempt(params: {
     modelId: model,
     workspaceDir,
   });
-  const sourceReplyLatch = createMessageToolSourceReplyLatch(params.opts);
-  const messagingToolSendLatch = createMessageToolSourceReplyLatch({
-    onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend,
-  });
+  const messageToolCommitObservers = createMessageToolCommitObservers(params.opts);
   let liveSwitchMediaTaskIds: ReadonlySet<string> = new Set();
   for (;;) {
     try {
-      liveSwitchMediaTaskIds = sessionKey
-        ? getGeneratedMediaTaskIdsForSessionKey(sessionKey)
-        : new Set<string>();
+      liveSwitchMediaTaskIds = messageToolCommitObservers.getMediaTaskIds(sessionKey);
       const spawnedBy = normalizedSpawned.spawnedBy ?? sessionEntry?.spawnedBy;
       const effectiveFallbacksOverride = isModelSelectionLocked(sessionEntry)
         ? []
@@ -258,11 +249,7 @@ export async function runEmbeddedAgentAttempt(params: {
       attemptLifecycleState.currentTurnUserMessagePersisted = false;
       let attemptMediaTaskIds = liveSwitchMediaTaskIds;
       const currentAttemptCommittedSideEffect = () =>
-        sourceReplyLatch.committed() ||
-        messagingToolSendLatch.committed() ||
-        Boolean(
-          sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
-        );
+        messageToolCommitObservers.hasCommittedSideEffect(sessionKey, attemptMediaTaskIds);
       const fallbackResult = await runEmbeddedAgentEntry<AgentAttemptResult>({
         selection: {
           cfg,
@@ -337,9 +324,7 @@ export async function runEmbeddedAgentAttempt(params: {
           fallbackTrajectoryRecorder?.recordEvent("model.fallback_step", step);
         },
         runCandidate: async (providerOverride, modelOverride, runOptions) => {
-          attemptMediaTaskIds = sessionKey
-            ? getGeneratedMediaTaskIdsForSessionKey(sessionKey)
-            : new Set<string>();
+          attemptMediaTaskIds = messageToolCommitObservers.getMediaTaskIds(sessionKey);
           attemptLifecycleState.lifecycleError = undefined;
           attemptLifecycleState.lifecycleFinishing = false;
           attemptLifecycleState.lifecycleEnded = false;
@@ -481,16 +466,7 @@ export async function runEmbeddedAgentAttempt(params: {
             runTimeoutOverrideMs,
             runId,
             lifecycleGeneration,
-            opts: {
-              ...params.opts,
-              onDeliveredMessageToolOnlySourceReply: params.opts
-                .onDeliveredMessageToolOnlySourceReply
-                ? sourceReplyLatch.mark
-                : undefined,
-              onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend
-                ? messagingToolSendLatch.mark
-                : undefined,
-            },
+            opts: messageToolCommitObservers.withLatches(),
             runContext,
             spawnedBy,
             messageChannel,
@@ -571,9 +547,7 @@ export async function runEmbeddedAgentAttempt(params: {
           throw new ModelSelectionLockedError();
         }
         if (
-          sourceReplyLatch.committed() ||
-          messagingToolSendLatch.committed() ||
-          (sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds))
+          messageToolCommitObservers.hasCommittedSideEffect(sessionKey, liveSwitchMediaTaskIds)
         ) {
           throw err;
         }
