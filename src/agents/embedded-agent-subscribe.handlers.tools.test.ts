@@ -1665,6 +1665,32 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     expect(ctx.state.currentSourceMessagingToolSentTextsNormalized).toEqual(["qa-msteams-dm-ok"]);
   });
 
+  it("reports committed off-route messaging sends without source-reply credit", async () => {
+    const { ctx } = createTestContext();
+    const onCommittedMessagingToolSend = vi.fn();
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    ctx.params.sourceReplyDeliveryMode = "automatic";
+    ctx.params.onCommittedMessagingToolSend = onCommittedMessagingToolSend;
+    ctx.params.onDeliveredMessageToolOnlySourceReply = onDeliveredMessageToolOnlySourceReply;
+
+    await executeTool(ctx, {
+      toolName: "message",
+      toolCallId: "tool-message-committed-other-route",
+      args: {
+        action: "send",
+        provider: "telegram",
+        to: "chat-other",
+        text: "Other route text",
+      },
+      isError: false,
+      result: { details: { ok: true } },
+    });
+
+    expect(onCommittedMessagingToolSend).toHaveBeenCalledOnce();
+    expect(onDeliveredMessageToolOnlySourceReply).not.toHaveBeenCalled();
+    expect(ctx.state.messageToolOnlySourceReplyDelivered).toBe(false);
+  });
+
   it("records rich-content delivery when visible text is blank", async () => {
     const { ctx } = createTestContext();
     const toolCallId = "tool-message-rich-content";

@@ -260,6 +260,7 @@ export function prepareEmbeddedAttemptStream(input: {
       sourceReplyDeliveryMode: attempt.sourceReplyDeliveryMode,
       hasDeliveredMessageToolOnlySourceReply: input.hasDeliveredSourceReply,
       onDeliveredMessageToolOnlySourceReply: input.markSourceReplyDelivered,
+      onCommittedMessagingToolSend: attempt.onCommittedMessagingToolSend,
       onAgentToolResult: attempt.onAgentToolResult,
       observeToolTerminal: attempt.observeToolTerminal,
       onToolResult: attempt.onToolResult,

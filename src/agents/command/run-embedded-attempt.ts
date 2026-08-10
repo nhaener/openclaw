@@ -229,6 +229,9 @@ export async function runEmbeddedAgentAttempt(params: {
     workspaceDir,
   });
   const sourceReplyLatch = createMessageToolSourceReplyLatch(params.opts);
+  const messagingToolSendLatch = createMessageToolSourceReplyLatch({
+    onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend,
+  });
   let liveSwitchMediaTaskIds: ReadonlySet<string> = new Set();
   for (;;) {
     try {
@@ -256,6 +259,7 @@ export async function runEmbeddedAgentAttempt(params: {
       let attemptMediaTaskIds = liveSwitchMediaTaskIds;
       const currentAttemptCommittedSideEffect = () =>
         sourceReplyLatch.committed() ||
+        messagingToolSendLatch.committed() ||
         Boolean(
           sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
         );
@@ -483,6 +487,9 @@ export async function runEmbeddedAgentAttempt(params: {
                 .onDeliveredMessageToolOnlySourceReply
                 ? sourceReplyLatch.mark
                 : undefined,
+              onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend
+                ? messagingToolSendLatch.mark
+                : undefined,
             },
             runContext,
             spawnedBy,
@@ -565,6 +572,7 @@ export async function runEmbeddedAgentAttempt(params: {
         }
         if (
           sourceReplyLatch.committed() ||
+          messagingToolSendLatch.committed() ||
           (sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds))
         ) {
           throw err;

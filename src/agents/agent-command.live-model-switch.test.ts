@@ -4083,6 +4083,38 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
   });
 
+  it("does not restart after a live model switch once a messaging tool send commits", async () => {
+    const onCommittedMessagingToolSend = vi.fn();
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      return await params.run(params.provider, params.model);
+    });
+    state.runAgentAttemptMock.mockImplementation(
+      async (attempt: { opts?: { onCommittedMessagingToolSend?: () => void } }) => {
+        attempt.opts?.onCommittedMessagingToolSend?.();
+        throw switchError;
+      },
+    );
+
+    await expect(
+      agentCommand({
+        message: "hello",
+        to: "+1234567890",
+        onCommittedMessagingToolSend,
+      }),
+    ).rejects.toThrow(switchError);
+
+    // Exactly one attempt: the committed messaging send must fence the
+    // live-model-switch replay through the real runEmbeddedAgentAttempt
+    // latch wiring, and the external observer must see the commit.
+    expect(state.runWithModelFallbackMock).toHaveBeenCalledOnce();
+    expect(state.runAgentAttemptMock).toHaveBeenCalledOnce();
+    expect(onCommittedMessagingToolSend).toHaveBeenCalledOnce();
+  });
+
   it("strips a caller-injected source-delivery observer at runtime ingress", async () => {
     setupSuccessfulAttempt();
     const injectedObserver = vi.fn();

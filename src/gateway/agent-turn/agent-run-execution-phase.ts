@@ -452,6 +452,7 @@ export function startAgentRunExecution(params: {
           internalDeliverySuppressText: params.client?.internal?.internalDeliverySuppressText,
           onDeliveredMessageToolOnlySourceReply:
             params.client?.internal?.onDeliveredMessageToolOnlySourceReply,
+          onCommittedMessagingToolSend: params.client?.internal?.onCommittedMessagingToolSend,
           suppressPromptPersistence:
             params.requestedPromptPersistenceSuppression ||
             shouldSuppressAgentPromptPersistence({

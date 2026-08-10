@@ -19,6 +19,7 @@ import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "./internal-runtime-context.js";
+import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import {
   callGateway as runtimeCallGateway,
   dispatchGatewayMethodInProcess as runtimeDispatchGatewayMethodInProcess,
@@ -1806,6 +1807,304 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       to: "channel:C123",
       threadId: "171.222",
       bestEffortDeliver: true,
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("latches a parent-only message-tool send so live model switches cannot duplicate it", async () => {
+    const onDeliveryResult = vi.fn();
+    const modelSwitchError = Object.assign(
+      new LiveSessionModelSwitchError({
+        provider: "openai",
+        model: "gpt-5.4",
+      }),
+      {
+        gatewayCode: "UNAVAILABLE",
+        message: "cron run continuation unavailable after live model switch",
+      },
+    );
+    const dispatchGatewayMethodInProcess = vi.fn(
+      async (
+        _method: string,
+        _agentParams: Record<string, unknown>,
+        options?: Parameters<typeof runtimeDispatchGatewayMethodInProcess>[2],
+      ) => {
+        options?.onCommittedMessagingToolSend?.();
+        throw modelSwitchError;
+      },
+    ) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-latch",
+      sourceTool: "subagent_announce",
+      onDeliveryResult,
+    });
+
+    // This error is transient-classified, so exactly one dispatch proves the
+    // committed-send latch, rather than the error type, prevented a retry.
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledOnce();
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the turn did not settle; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    // The ambiguous fence must be reported at the commit edge so it can
+    // persist before any throw-prone post-commit code runs.
+    expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+    expect(onDeliveryResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivered: false,
+        terminal: true,
+        disposition: "ambiguous",
+        error:
+          "parent-only completion committed a message-tool send but the turn has not settled yet; delivery is not verified",
+      }),
+    );
+    expect(onDeliveryResult).not.toHaveBeenCalledWith(expect.objectContaining({ delivered: true }));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("latch blocks in-process transient retries after a committed parent-only send", async () => {
+    const onDeliveryResult = vi.fn();
+    const childSessionKey = "agent:worker:subagent:parent-only-latched-transient";
+    const transientError = Object.assign(new Error("cron run continuation unavailable"), {
+      gatewayCode: "UNAVAILABLE",
+    });
+    const dispatchGatewayMethodInProcess = vi.fn(
+      async (
+        _method: string,
+        _agentParams: Record<string, unknown>,
+        options?: Parameters<typeof runtimeDispatchGatewayMethodInProcess>[2],
+      ) => {
+        options?.onCommittedMessagingToolSend?.();
+        throw transientError;
+      },
+    ) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-latched-transient",
+      sourceTool: "subagent_announce",
+      sourceSessionKey: childSessionKey,
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        childSessionId: "child-session-id",
+        taskLabel: "parent-only latched transient completion",
+        status: "ok",
+        statusLabel: "completed successfully",
+        result: "(no output)",
+      }),
+      onDeliveryResult,
+    });
+
+    // A transient error normally retries; the latch must stop the second
+    // attempt because the send already committed.
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the turn did not settle; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    // The ambiguous fence must be reported at the commit edge so it can
+    // persist before any throw-prone post-commit code runs.
+    expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+    expect(onDeliveryResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivered: false,
+        terminal: true,
+        disposition: "ambiguous",
+        error:
+          "parent-only completion committed a message-tool send but the turn has not settled yet; delivery is not verified",
+      }),
+    );
+    expect(onDeliveryResult).not.toHaveBeenCalledWith(expect.objectContaining({ delivered: true }));
+  });
+
+  it("keeps a settled latched parent-only no-output completion ambiguous without a receipt", async () => {
+    const onDeliveryResult = vi.fn();
+    const childSessionKey = "agent:worker:subagent:parent-only-latched-no-output";
+    const dispatchGatewayMethodInProcess = vi.fn(
+      async (
+        _method: string,
+        _agentParams: Record<string, unknown>,
+        options?: Parameters<typeof runtimeDispatchGatewayMethodInProcess>[2],
+      ) => {
+        options?.onCommittedMessagingToolSend?.();
+        return {
+          result: {
+            payloads: [],
+            ...committedSessionSpawnEvidence,
+          },
+        };
+      },
+    ) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-latched-no-output",
+      sourceTool: "subagent_announce",
+      sourceSessionKey: childSessionKey,
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        childSessionId: "child-session-id",
+        taskLabel: "parent-only latched no-output completion",
+        status: "ok",
+        statusLabel: "completed successfully",
+        result: "(no output)",
+      }),
+      onDeliveryResult,
+    });
+
+    // The latch's ambiguous result must win over the required-no-output
+    // completion's otherwise permanent-failure classification.
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the settled turn has no source-matched receipt; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    // The ambiguous fence must be reported at the commit edge so it can
+    // persist before any throw-prone post-commit code runs.
+    expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+    expect(onDeliveryResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivered: false,
+        terminal: true,
+        disposition: "ambiguous",
+        error:
+          "parent-only completion committed a message-tool send but the turn has not settled yet; delivery is not verified",
+      }),
+    );
+    expect(onDeliveryResult).not.toHaveBeenCalledWith(expect.objectContaining({ delivered: true }));
+  });
+
+  it("does not latch-block retries for a parent-only run that never sent", async () => {
+    const transientError = Object.assign(new Error("cron run continuation unavailable"), {
+      gatewayCode: "UNAVAILABLE",
+    });
+    let calls = 0;
+    const dispatchGatewayMethodInProcess = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw transientError;
+      }
+      return { payloads: [{ text: "NO_REPLY" }] };
+    }) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    const sendMessage = createSendMessageMock();
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+      sendMessage,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      announceTarget: "parent",
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-parent-only-no-send-retry",
+      sourceTool: "subagent_announce",
+    });
+
+    // Without a committed send there is no side effect to protect: the
+    // transient failure must still be retried, and the settled NO_REPLY is
+    // rejected for the missing message-tool receipt as before.
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledTimes(2);
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error: "parent-only completion must publish via the message tool",
     });
     expect(sendMessage).not.toHaveBeenCalled();
   });
