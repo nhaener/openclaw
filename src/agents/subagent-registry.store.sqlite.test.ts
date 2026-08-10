@@ -91,6 +91,7 @@ describe("subagent registry sqlite store", () => {
   it("persists subagent runs in the shared sqlite state database", async () => {
     await withTempStateEnv(async () => {
       const run = createRun({
+        announceTarget: "parent",
         requesterTurnRunId: "run-requester",
         requesterTurnYielded: true,
         retireAfterRequesterTurn: true,
@@ -132,6 +133,7 @@ describe("subagent registry sqlite store", () => {
         terminalOwner: "interrupted-recovery",
         completion: run.completion,
         delivery: run.delivery,
+        announceTarget: "parent",
         requesterSettleWake: run.requesterSettleWake,
       });
       expect(await fs.stat(path.join(tempStateDir!, "state", "openclaw.sqlite"))).toBeTruthy();

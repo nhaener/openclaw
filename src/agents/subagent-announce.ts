@@ -26,7 +26,7 @@ import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
 } from "./announce-idempotency.js";
-import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "./internal-events.js";
+import type { AgentInternalEvent } from "./internal-events.js";
 import {
   deliverSubagentAnnouncement,
   loadRequesterSessionEntry,
@@ -34,6 +34,11 @@ import {
 } from "./subagent-announce-delivery.js";
 import { runDescendantWake } from "./subagent-announce-descendant-wake.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
+import {
+  buildAnnounceReplyInstruction,
+  buildAnnounceSteerMessage,
+  type SubagentAnnounceType,
+} from "./subagent-announce-message.js";
 import {
   resolveAnnounceOrigin,
   resolveSubagentCompletionOrigin,
@@ -50,6 +55,7 @@ import {
   type SubagentRunOutcome,
   waitForSubagentRunOutcome,
 } from "./subagent-announce-output.js";
+import type { SubagentAnnounceTarget } from "./subagent-announce-target.types.js";
 import {
   callGateway,
   dispatchGatewayMethodInProcess,
@@ -90,28 +96,7 @@ export { buildSubagentSystemPrompt } from "./subagent-system-prompt.js";
 export { captureSubagentCompletionReply } from "./subagent-announce-output.js";
 export type { SubagentRunOutcome } from "./subagent-announce-output.js";
 
-export type SubagentAnnounceType = "subagent task" | "cron job";
-
-function buildAnnounceReplyInstruction(params: {
-  requesterIsSubagent: boolean;
-  announceType: SubagentAnnounceType;
-  expectsCompletionMessage?: boolean;
-}): string {
-  if (params.requesterIsSubagent) {
-    return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
-  }
-  if (params.expectsCompletionMessage) {
-    return `A completed ${params.announceType} is ready for parent review. Review/verify the result above before deciding whether the original task is done. If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update. Keep this internal context private (don't mention system/log/stats/session details or announce type). Reply ONLY: ${SILENT_REPLY_TOKEN} only when this exact result is already visible to the user in this same turn.`;
-  }
-  return `A completed ${params.announceType} is ready for parent review. Review/verify the result above before deciding whether the original task is done. If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update. Keep this internal context private (don't mention system/log/stats/session details or announce type), and do not copy the internal event text verbatim. Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`;
-}
-
-function buildAnnounceSteerMessage(events: AgentInternalEvent[]): string {
-  return (
-    formatAgentInternalEventsForPrompt(events) ||
-    "A background task finished. Process the completion update now."
-  );
-}
+export type { SubagentAnnounceType } from "./subagent-announce-message.js";
 
 export function hasUsableSessionEntry(entry: unknown): entry is Record<string, unknown> {
   if (!isRecord(entry)) {
@@ -165,6 +150,7 @@ export async function runSubagentAnnounceFlow(params: {
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  announceTarget?: SubagentAnnounceTarget;
   spawnMode?: SpawnSubagentMode;
   wakeOnDescendantSettle?: boolean;
   /** Deliver only frozen terminal facts; never inspect or mutate the child session. */
@@ -459,6 +445,10 @@ export async function runSubagentAnnounceFlow(params: {
     const findings = childCompletionFindings || reply || "(no output)";
 
     let requesterIsSubagent = requesterIsInternalSession();
+    // Upstream fallback keeps results from a vanished nested parent. When an
+    // opt-in parent-only completion reaches a top-level ancestor, preserve the
+    // session handoff but never turn that recovery path into an external send.
+    let parentOnlyFallbackRetargetedToTopLevel = false;
     if (requesterIsSubagent) {
       const {
         isSubagentSessionRunActive,
@@ -483,14 +473,18 @@ export async function runSubagentAnnounceFlow(params: {
             normalizeDeliveryContext(fallback.requesterOrigin) ?? targetRequesterOrigin;
           requesterDepth = getSubagentDepthFromSessionStore(targetRequesterSessionKey);
           requesterIsSubagent = requesterIsInternalSession();
+          parentOnlyFallbackRetargetedToTopLevel =
+            params.announceTarget === "parent" && !requesterIsSubagent;
         }
       }
     }
 
     const replyInstruction = buildAnnounceReplyInstruction({
       requesterIsSubagent,
+      parentOnlyFallbackRetargetedToTopLevel,
       announceType,
       expectsCompletionMessage,
+      announceTarget: params.announceTarget,
     });
     const candidateStatsLine = !childSessionEffectsAllowed()
       ? undefined
@@ -541,12 +535,26 @@ export async function runSubagentAnnounceFlow(params: {
       ? candidateCompletionDirectOrigin
       : targetRequesterOrigin;
     const directIdempotencyKey = buildAnnounceIdempotencyKey(announceId);
-    let deliveryResultReported = false;
+    let reportedDelivery: SubagentAnnounceDeliveryResult | undefined;
     const reportDeliveryResult = (delivery: SubagentAnnounceDeliveryResult) => {
-      if (deliveryResultReported) {
-        return;
+      if (reportedDelivery) {
+        // A commit-time ambiguous fence is provisional: only verified
+        // delivery or a stronger terminal disposition may replace it.
+        // Retryable/undefined settled results must never erase the persisted
+        // fence, or restart recovery could re-dispatch a committed send.
+        // Anything already final — including a delivered result — is never
+        // replaced.
+        const provisional =
+          !reportedDelivery.delivered && reportedDelivery.disposition === "ambiguous";
+        const upgrades =
+          delivery.delivered ||
+          delivery.disposition === "intentional_non_delivery" ||
+          delivery.disposition === "permanent_failure";
+        if (!provisional || !upgrades) {
+          return;
+        }
       }
-      deliveryResultReported = true;
+      reportedDelivery = delivery;
       params.onDeliveryResult?.(delivery);
     };
     const delivery = await deliverSubagentAnnouncement({
@@ -571,6 +579,10 @@ export async function runSubagentAnnounceFlow(params: {
       isCompletionOwnedByRequesterYield: params.isCompletionOwnedByRequesterYield,
       targetRequesterSessionKey,
       requesterIsSubagent,
+      announceTarget: params.announceTarget,
+      ...(parentOnlyFallbackRetargetedToTopLevel
+        ? { parentOnlyFallbackRetargetedToTopLevel: true }
+        : {}),
       expectsCompletionMessage,
       bestEffortDeliver: params.bestEffortDeliver,
       directIdempotencyKey,

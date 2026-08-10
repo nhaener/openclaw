@@ -3,7 +3,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import type { SubagentCompletionToolHandoffRegistration } from "../agents/subagent-announce-handoff.js";
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -19,11 +18,7 @@ import type { PluginRegistryParams } from "../plugins/registry-types.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createPluginRuntimeLoaderLogger } from "../plugins/runtime/load-context.js";
-import {
-  resolvePluginSubagentCompletionRequester,
-  type PluginSubagentRequesterContext,
-} from "../plugins/runtime/subagent-requester-context.js";
-import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
+import { resolvePluginSubagentCompletionRequester } from "../plugins/runtime/subagent-requester-context.js";
 import type { PluginRuntime, RuntimeGatewayRequestOptions } from "../plugins/runtime/types.js";
 import type { PluginLogger, PluginOrigin } from "../plugins/types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
@@ -34,7 +29,6 @@ import {
   type GatewayMethodDispatchResponse,
   unwrapGatewayMethodDispatchResponse,
 } from "./server-in-process-dispatch.js";
-import type { TrustedSessionCreation } from "./server-methods/session-creation-provenance.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandler,
@@ -51,6 +45,7 @@ import {
   normalizePluginSubagentRunRuntime,
   resolvePluginSubagentRequestedModelRef,
 } from "./server-plugin-subagent-runtime.js";
+import type { DispatchGatewayMethodInProcessOptions } from "./server-plugins-dispatch-options.types.js";
 import { projectGatewayRuntimeNodes } from "./server-plugins-node-runtime.js";
 import {
   cancelSubagentCompletionToolHandoff,
@@ -215,28 +210,6 @@ function resolveRuntimeNodeInvokeSyntheticScopes(params: {
     : undefined;
 }
 
-type DispatchGatewayMethodInProcessOptions = {
-  allowSyntheticModelOverride?: boolean;
-  allowSyntheticCronRunContinuation?: boolean;
-  agentRunTracking?: "plugin_subagent";
-  disableSyntheticClient?: boolean;
-  expectFinal?: boolean;
-  forceSyntheticClient?: boolean;
-  internalDeliveryMediaUrls?: string[];
-  internalDeliverySuppressText?: boolean;
-  onAccepted?: (payload: unknown) => void;
-  onSignalAbort?: () => Promise<void> | void;
-  pluginRuntimeOwnerId?: string;
-  pluginSubagentRequester?: PluginSubagentRequesterContext;
-  runtimePluginToolGrant?: RuntimePluginToolGrant;
-  delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
-  sessionCreation?: TrustedSessionCreation;
-  requireScopedClient?: boolean;
-  syntheticScopes?: string[];
-  timeoutMs?: number;
-  signal?: AbortSignal;
-};
-
 export type { GatewayMethodDispatchResponse } from "./server-in-process-dispatch.js";
 
 export async function dispatchGatewayMethodInProcessRaw(
@@ -271,6 +244,8 @@ export async function dispatchGatewayMethodInProcessRaw(
     cronRunContinuation: options?.allowSyntheticCronRunContinuation === true,
     internalDeliveryMediaUrls: options?.internalDeliveryMediaUrls,
     internalDeliverySuppressText: options?.internalDeliverySuppressText,
+    onDeliveredMessageToolOnlySourceReply: options?.onDeliveredMessageToolOnlySourceReply,
+    onCommittedMessagingToolSend: options?.onCommittedMessagingToolSend,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     ...(options?.pluginSubagentRequester
       ? { pluginSubagentRequester: options.pluginSubagentRequester }
@@ -289,6 +264,8 @@ export async function dispatchGatewayMethodInProcessRaw(
       options?.pluginSubagentRequester ||
       options?.runtimePluginToolGrant ||
       options?.delegatedToolPolicyHandoff ||
+      options?.onDeliveredMessageToolOnlySourceReply ||
+      options?.onCommittedMessagingToolSend ||
       scope?.client?.internal?.delegatedToolPolicyHandoffId
       ? {
           ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
@@ -298,6 +275,8 @@ export async function dispatchGatewayMethodInProcessRaw(
             : {}),
           runtimePluginToolGrant: options?.runtimePluginToolGrant,
           delegatedToolPolicyHandoffId,
+          onDeliveredMessageToolOnlySourceReply: options?.onDeliveredMessageToolOnlySourceReply,
+          onCommittedMessagingToolSend: options?.onCommittedMessagingToolSend,
         }
       : undefined,
   );
@@ -318,6 +297,7 @@ export async function dispatchGatewayMethodInProcessRaw(
       requestIdPrefix: "plugin-subagent",
       timeoutMs: options?.timeoutMs,
       ...(options?.signal ? { signal: options.signal } : {}),
+      settleOnAbort: options?.settleOnAbort,
     });
   } finally {
     cancelSubagentCompletionToolHandoff(delegatedToolPolicyHandoffId);

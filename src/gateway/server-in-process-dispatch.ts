@@ -24,6 +24,8 @@ type InProcessGatewayDispatchOptions = {
   requestIdPrefix?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Wait for the routed handler to settle after abort before returning. */
+  settleOnAbort?: boolean;
 };
 
 export function unwrapGatewayMethodDispatchResponse(
@@ -147,7 +149,7 @@ export async function dispatchGatewayRequestInProcessRaw(
   });
   const deadlineMs = resolveDispatchDeadlineMs(options.timeoutMs);
   const { handleGatewayRequest } = await import("./server-methods.js");
-  void handleGatewayRequest({
+  const handleRequestPromise = handleGatewayRequest({
     req: {
       type: "req",
       id: `${options.requestIdPrefix ?? "in-process"}-${randomUUID()}`,
@@ -189,13 +191,22 @@ export async function dispatchGatewayRequestInProcessRaw(
       rejectFinalResponse?.(error);
     });
 
-  firstResponse = await waitForDispatch(
-    method,
-    firstResponsePromise,
-    deadlineMs,
-    options.signal,
-    options.onSignalAbort,
-  );
+  const waitForResponse = async (promise: Promise<GatewayMethodDispatchResponse>) => {
+    try {
+      return await waitForDispatch(method, promise, deadlineMs, options.signal, options.onSignalAbort);
+    } catch (err) {
+      if (options.settleOnAbort === true && options.signal?.aborted) {
+        // The abort is advisory to the routed handler. Join the response
+        // promise it owns so callers cannot retry while that attempt can still
+        // commit an external side effect.
+        await promise.catch(() => undefined);
+        await handleRequestPromise;
+      }
+      throw err;
+    }
+  };
+
+  firstResponse = await waitForResponse(firstResponsePromise);
   const firstPayload = firstResponse.payload as { status?: unknown } | undefined;
   if (options.expectFinal !== true || firstPayload?.status !== "accepted") {
     return firstResponse;
@@ -206,8 +217,7 @@ export async function dispatchGatewayRequestInProcessRaw(
   }
   return (
     finalResponse ??
-    (await waitForDispatch(
-      method,
+    (await waitForResponse(
       new Promise<GatewayMethodDispatchResponse>((resolve, reject) => {
         resolveFinalResponse = resolve;
         rejectFinalResponse = reject;
@@ -219,9 +229,6 @@ export async function dispatchGatewayRequestInProcessRaw(
           resolve(finalResponse);
         }
       }),
-      deadlineMs,
-      options.signal,
-      options.onSignalAbort,
     ))
   );
 }

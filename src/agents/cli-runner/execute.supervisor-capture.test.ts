@@ -2417,6 +2417,8 @@ describe("executePreparedCliRun supervisor output capture", () => {
     const context = buildPreparedCliRunContext({ output: "text", provider: "google-gemini-cli" });
     context.mcpDeliveryCapture = true;
     context.params.sourceReplyDeliveryMode = "message_tool_only";
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    context.params.onDeliveredMessageToolOnlySourceReply = onDeliveredMessageToolOnlySourceReply;
     supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as SupervisorSpawnInput;
       recordMcpLoopbackToolCallResult({
@@ -2481,6 +2483,7 @@ describe("executePreparedCliRun supervisor output capture", () => {
     expect(result.messagingToolSentMediaUrls).toEqual(["https://example.com/implicit.png"]);
     expect(result.messagingToolSentTargets).toBeUndefined();
     expect(result.didDeliverSourceReplyViaMessageTool).toBe(true);
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
     expect(result.messagingToolSourceReplyPayloads).toEqual([
       {
         text: "implicit reply",

@@ -78,12 +78,14 @@ import {
   type SubagentAnnounceDeliveryResult,
 } from "./subagent-announce-dispatch.js";
 import type { SubagentCompletionToolHandoffRegistration } from "./subagent-announce-handoff.js";
+import { buildParentOnlyDirectReplyInstruction } from "./subagent-announce-message.js";
 import {
   inferDeliveryTargetChatType,
   resolveCompletionDeliveryOrigins,
   resolveGeneratedMediaSessionDeliveryRoute,
   type DeliveryContext,
 } from "./subagent-announce-origin.js";
+import type { SubagentAnnounceTarget } from "./subagent-announce-target.types.js";
 import { admitCorrelatedSubagentSessionDelivery } from "./subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
@@ -145,21 +147,50 @@ async function resolveQueueEmbeddedAgentMessageOutcome(
 async function runAnnounceAgentCall(params: {
   agentParams: Record<string, unknown>;
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
+  onDeliveredMessageToolOnlySourceReply?: () => void;
+  onCommittedMessagingToolSend?: () => void;
   expectFinal?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<unknown> {
-  return await subagentAnnounceDeliveryDeps.dispatchGatewayMethodInProcess(
-    "agent",
-    params.agentParams,
-    {
-      expectFinal: params.expectFinal,
-      forceSyntheticClient: shouldPreserveUserFacingSessionStateForInputProvenance(
-        params.agentParams.inputProvenance,
-      ),
-      delegatedToolPolicyHandoff: params.delegatedToolPolicyHandoff,
-      timeoutMs: params.timeoutMs,
-    },
-  );
+  const attemptAbort = new AbortController();
+  const relayAbort = () => attemptAbort.abort(params.signal?.reason);
+  params.signal?.addEventListener("abort", relayAbort, { once: true });
+  if (params.signal?.aborted) {
+    relayAbort();
+  }
+  const timeout =
+    params.timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          const timeoutError = new Error("gateway request timeout for agent");
+          timeoutError.name = "TimeoutError";
+          attemptAbort.abort(timeoutError);
+        }, params.timeoutMs);
+  timeout?.unref?.();
+  try {
+    return await subagentAnnounceDeliveryDeps.dispatchGatewayMethodInProcess(
+      "agent",
+      params.agentParams,
+      {
+        expectFinal: params.expectFinal,
+        forceSyntheticClient: shouldPreserveUserFacingSessionStateForInputProvenance(
+          params.agentParams.inputProvenance,
+        ),
+        delegatedToolPolicyHandoff: params.delegatedToolPolicyHandoff,
+        onDeliveredMessageToolOnlySourceReply: params.onDeliveredMessageToolOnlySourceReply,
+        onCommittedMessagingToolSend: params.onCommittedMessagingToolSend,
+        timeoutMs: params.timeoutMs,
+        signal: attemptAbort.signal,
+        settleOnAbort: true,
+      },
+    );
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    params.signal?.removeEventListener("abort", relayAbort);
+  }
 }
 
 function formatQueueWakeFailureError(
@@ -226,6 +257,7 @@ async function resolveActiveWakeWithRetries(
   wakeOptions: EmbeddedAgentQueueMessageOptions,
   signal?: AbortSignal,
   isAttemptAllowed?: () => boolean,
+  allowSourceReplyDeliveryModeFallback = true,
 ): Promise<EmbeddedAgentQueueMessageOutcome | typeof SOURCE_OWNER_CHANGED> {
   // Bound the whole active wake by the caller's delivery window. Each retry
   // passes only the remaining window into transcript-commit waiting so a
@@ -281,7 +313,8 @@ async function resolveActiveWakeWithRetries(
     }
     if (
       outcome.reason === "source_reply_delivery_mode_mismatch" &&
-      currentOptions.sourceReplyDeliveryMode !== undefined
+      currentOptions.sourceReplyDeliveryMode !== undefined &&
+      allowSourceReplyDeliveryModeFallback
     ) {
       // Active requester runs own their final delivery mode. Direct-completion
       // policy must not make an already-running automatic parent unreachable.
@@ -598,6 +631,8 @@ async function maybeSteerSubagentAnnounce(params: {
   steerMessage: string;
   signal?: AbortSignal;
   isSourceSessionEffectsAllowed?: () => boolean;
+  sourceReplyDeliveryMode?: "message_tool_only";
+  allowSourceReplyDeliveryModeFallback?: boolean;
 }): Promise<
   | { status: "steered"; deliveredAt?: number; enqueuedAt?: number }
   | { status: "none" | "dropped" | "source_owner_changed" }
@@ -626,6 +661,9 @@ async function maybeSteerSubagentAnnounce(params: {
   const queueOptions: EmbeddedAgentQueueMessageOptions = {
     deliveryTimeoutMs: params.deliveryTimeoutMs,
     steeringMode: "all",
+    ...(params.sourceReplyDeliveryMode
+      ? { sourceReplyDeliveryMode: params.sourceReplyDeliveryMode }
+      : {}),
     ...(queueSettings.debounceMs !== undefined ? { debounceMs: queueSettings.debounceMs } : {}),
     waitForTranscriptCommit: true,
   };
@@ -635,6 +673,7 @@ async function maybeSteerSubagentAnnounce(params: {
     queueOptions,
     params.signal,
     params.isSourceSessionEffectsAllowed,
+    params.allowSourceReplyDeliveryModeFallback,
   );
   if (queueOutcome === SOURCE_OWNER_CHANGED) {
     return { status: "source_owner_changed" };
@@ -804,7 +843,7 @@ function hasMessagingToolDeliveryToSource(
     messagingToolSourceReplyPayloads?: unknown;
   },
   deliveryTarget: Parameters<typeof sourceDeliveryTargetsMatch>[1],
-  options?: { requireFinalReply?: boolean },
+  options?: { requireFinalReply?: boolean; requireExplicitTarget?: boolean },
 ): boolean {
   const targets = Array.isArray(result.messagingToolSentTargets)
     ? result.messagingToolSentTargets
@@ -820,6 +859,9 @@ function hasMessagingToolDeliveryToSource(
       return false;
     }
     const record = target as Parameters<typeof sourceDeliveryTargetsMatch>[0];
+    if (options?.requireExplicitTarget && !(typeof record.to === "string" && record.to.trim())) {
+      return false;
+    }
     // Older source receipts omit `to`; explicit off-target sends must never satisfy it.
     const sourceTarget =
       typeof record.to === "string" && record.to.trim()
@@ -827,6 +869,9 @@ function hasMessagingToolDeliveryToSource(
         : { ...record, to: deliveryTarget.to };
     return sourceDeliveryTargetsMatch(sourceTarget, deliveryTarget);
   });
+  if (options?.requireExplicitTarget) {
+    return result.didSendViaMessagingTool === true && sourceTargets.length > 0;
+  }
   if (options?.requireFinalReply) {
     const hasCommittedSourceDelivery =
       hasCommittedSourceReplyDeliveryEvidence(result) ||
@@ -855,12 +900,58 @@ function hasMessagingToolDeliveryToSource(
   return hasMessagingToolDeliveryEvidence(result) && sourceTargets.length > 0;
 }
 
+function hasUnverifiableOrOffTargetSideEffect(
+  result: Parameters<typeof hasMessagingToolDeliveryToSource>[0],
+  deliveryTarget: Parameters<typeof sourceDeliveryTargetsMatch>[1],
+): boolean {
+  const targets = Array.isArray(result.messagingToolSentTargets)
+    ? result.messagingToolSentTargets
+    : [];
+  const explicitSourceTargets = targets.filter((target) => {
+    if (!target || typeof target !== "object" || Array.isArray(target)) {
+      return false;
+    }
+    const record = target as Parameters<typeof sourceDeliveryTargetsMatch>[0];
+    return (
+      typeof record.to === "string" &&
+      Boolean(record.to.trim()) &&
+      sourceDeliveryTargetsMatch(record, deliveryTarget)
+    );
+  });
+  const hasOffTarget =
+    result.didSendViaMessagingTool === true &&
+    targets.some((target) => {
+      if (!target || typeof target !== "object" || Array.isArray(target)) {
+        return false;
+      }
+      const record = target as Parameters<typeof sourceDeliveryTargetsMatch>[0];
+      return (
+        !(typeof record.to === "string" && record.to.trim()) ||
+        !sourceDeliveryTargetsMatch(record, deliveryTarget)
+      );
+    });
+  const hasSourceReplyWithoutExplicitTarget =
+    hasCommittedSourceReplyDeliveryEvidence(result) && explicitSourceTargets.length === 0;
+  const hasUnrelatedCommittedSideEffect = hasCommittedOutboundDeliveryEvidence({
+    acceptedSessionSpawns: result.acceptedSessionSpawns,
+    successfulCronAdds: result.successfulCronAdds,
+  });
+  return (
+    hasOffTarget ||
+    hasUnaccountedMessagingToolAggregateEvidence(result) ||
+    hasSourceReplyWithoutExplicitTarget ||
+    hasUnrelatedCommittedSideEffect
+  );
+}
+
 async function sendSubagentAnnounceDirectly(params: {
   requesterSessionKey: string;
   targetRequesterSessionKey: string;
   triggerMessage: string;
   internalEvents?: AgentInternalEvent[];
   expectsCompletionMessage: boolean;
+  announceTarget?: SubagentAnnounceTarget;
+  parentOnlyFallbackRetargetedToTopLevel?: boolean;
   requireVisibleReply?: boolean;
   bestEffortDeliver?: boolean;
   directIdempotencyKey: string;
@@ -901,14 +992,26 @@ async function sendSubagentAnnounceDirectly(params: {
     const requesterEntry = subagentAnnounceDeliveryDeps.loadRequesterSessionEntry(
       params.targetRequesterSessionKey,
     ).entry;
-    const deliveryTarget = !params.requesterIsSubagent
+    const parentOnly = params.announceTarget === "parent";
+    const parentOnlyExternalCompletion =
+      parentOnly && !params.requesterIsSubagent && !params.parentOnlyFallbackRetargetedToTopLevel;
+    const deliveryTarget =
+      !parentOnly && !params.requesterIsSubagent
+        ? resolveExternalBestEffortDeliveryTarget({
+            channel: effectiveDirectOrigin?.channel,
+            to: effectiveDirectOrigin?.to,
+            accountId: effectiveDirectOrigin?.accountId,
+            threadId: effectiveDirectOrigin?.threadId,
+          })
+        : { deliver: false };
+    const messagingDeliveryTarget = parentOnlyExternalCompletion
       ? resolveExternalBestEffortDeliveryTarget({
           channel: effectiveDirectOrigin?.channel,
           to: effectiveDirectOrigin?.to,
           accountId: effectiveDirectOrigin?.accountId,
           threadId: effectiveDirectOrigin?.threadId,
         })
-      : { deliver: false };
+      : deliveryTarget;
     const normalizedSessionOnlyOriginChannel = !params.requesterIsSubagent
       ? normalizeMessageChannel(sessionOnlyOrigin?.channel)
       : undefined;
@@ -938,6 +1041,7 @@ async function sendSubagentAnnounceDirectly(params: {
     const agentMediatedCompletion =
       params.expectsCompletionMessage && isAgentMediatedCompletionSourceTool(sourceToolId);
     const completionRouteRequiresMessageToolDelivery =
+      !parentOnly &&
       params.expectsCompletionMessage &&
       completionRequiresMessageToolDelivery({
         cfg,
@@ -948,6 +1052,7 @@ async function sendSubagentAnnounceDirectly(params: {
         requesterSessionOrigin,
       });
     const subagentDirectMessageCompletionRequiresMessageTool =
+      !parentOnly &&
       params.expectsCompletionMessage &&
       isSubagentCompletion &&
       deliveryTarget.deliver &&
@@ -994,10 +1099,14 @@ async function sendSubagentAnnounceDirectly(params: {
         onDeliveryResult: params.onDeliveryResult,
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
-    const completionSourceReplyDeliveryMode = requiresMessageToolDelivery
-      ? "message_tool_only"
-      : undefined;
-    const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
+    const completionSourceReplyDeliveryMode =
+      requiresMessageToolDelivery ||
+      parentOnlyExternalCompletion ||
+      params.parentOnlyFallbackRetargetedToTopLevel
+        ? "message_tool_only"
+        : undefined;
+    const shouldDeliverAgentFinal =
+      !parentOnly && deliveryTarget.deliver && !requiresMessageToolDelivery;
     const requesterQueueSettings = resolveQueueSettings({
       cfg,
       channel:
@@ -1017,6 +1126,9 @@ async function sendSubagentAnnounceDirectly(params: {
         ...(completionSourceReplyDeliveryMode
           ? { sourceReplyDeliveryMode: completionSourceReplyDeliveryMode }
           : {}),
+        ...(parentOnlyExternalCompletion || params.parentOnlyFallbackRetargetedToTopLevel
+          ? { allowSourceReplyDeliveryModeFallback: false }
+          : {}),
         ...(requesterQueueSettings.debounceMs !== undefined
           ? { debounceMs: requesterQueueSettings.debounceMs }
           : {}),
@@ -1030,6 +1142,7 @@ async function sendSubagentAnnounceDirectly(params: {
         wakeOptions,
         params.signal,
         isCompletionDeliveryAllowed,
+        !parentOnlyExternalCompletion && !params.parentOnlyFallbackRetargetedToTopLevel,
       );
       if (wakeOutcome === SOURCE_OWNER_CHANGED) {
         return sourceOwnerChangedResult();
@@ -1066,6 +1179,17 @@ async function sendSubagentAnnounceDirectly(params: {
         path: "none",
       };
     }
+    const directInternalEvents =
+      parentOnlyExternalCompletion && params.expectsCompletionMessage && params.internalEvents
+        ? params.internalEvents.map((event) => ({
+            ...event,
+            replyInstruction: buildParentOnlyDirectReplyInstruction(event.announceType),
+          }))
+        : params.internalEvents;
+    const directTriggerMessage =
+      directInternalEvents !== params.internalEvents
+        ? formatAgentInternalEventsForPrompt(directInternalEvents) || params.triggerMessage
+        : params.triggerMessage;
     const directAgentThreadId = shouldDeliverAgentFinal
       ? stringifyRouteThreadId(deliveryTarget.threadId)
       : sessionOnlyOriginChannel
@@ -1073,10 +1197,10 @@ async function sendSubagentAnnounceDirectly(params: {
         : undefined;
     const directAgentParams: Record<string, unknown> = {
       sessionKey: canonicalRequesterSessionKey,
-      message: params.triggerMessage,
+      message: directTriggerMessage,
       deliver: shouldDeliverAgentFinal,
       bestEffortDeliver: params.bestEffortDeliver,
-      internalEvents: params.internalEvents,
+      internalEvents: directInternalEvents,
       channel: shouldDeliverAgentFinal ? deliveryTarget.channel : sessionOnlyOriginChannel,
       accountId: shouldDeliverAgentFinal
         ? deliveryTarget.accountId
@@ -1101,13 +1225,73 @@ async function sendSubagentAnnounceDirectly(params: {
       idempotencyKey: params.directIdempotencyKey,
     };
     let directAnnounceResponse: unknown;
+    let committedMessageToolDelivery: SubagentAnnounceDeliveryResult | undefined;
+    // Parent-only completions withhold delivery credit until a source-matched
+    // receipt is verified, but any committed message-tool send in the turn is still an
+    // external side effect: latch it independently of receipt credit so no
+    // in-process retry path can publish a duplicate, and report the ambiguous
+    // fence at the commit edge so it persists immediately — the same
+    // commit-time persistence the default committed-send path gets. Any
+    // remaining crash window between the platform send and that persisted
+    // fence is shared with the pre-existing committed-send delivery path;
+    // closing it needs durable send journaling and is tracked separately.
+    let parentOnlySourceSendLatched = false;
+    const commitMessageToolSourceDelivery = () => {
+      if (committedMessageToolDelivery) {
+        return;
+      }
+      committedMessageToolDelivery = {
+        delivered: true,
+        path: "direct",
+        deliveredAt: Date.now(),
+      };
+      try {
+        params.onDeliveryResult?.(committedMessageToolDelivery);
+      } catch {
+        // Delivery is already committed. Final result reconciliation can
+        // repair accounting, but the model must never resend this message.
+      }
+    };
+    const parentOnlyLatchedAmbiguousResult = (
+      detail = "the turn did not settle",
+    ): SubagentAnnounceDeliveryResult => ({
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error: `parent-only completion committed a message-tool send but ${detail}; delivery is not verified`,
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    const latchParentOnlySourceSend = () => {
+      if (parentOnlySourceSendLatched) {
+        return;
+      }
+      parentOnlySourceSendLatched = true;
+      try {
+        // Persisting the ambiguous disposition at the commit edge makes the
+        // fence durable before any throw-prone post-commit code runs, so
+        // restart recovery treats the send as terminal instead of
+        // re-dispatching. A later settled result may upgrade it to verified.
+        params.onDeliveryResult?.(parentOnlyLatchedAmbiguousResult("the turn has not settled yet"));
+      } catch {
+        // The send is already committed; the in-memory latch above still
+        // blocks in-process retries even if fence reporting fails.
+      }
+    };
     try {
       directAnnounceResponse = await runAnnounceDeliveryWithRetry({
         operation: params.expectsCompletionMessage
           ? "completion direct announce agent call"
           : "direct announce agent call",
         signal: params.signal,
-        isAttemptAllowed: isCompletionDeliveryAllowed,
+        // A committed source reply is the delivery boundary; a latched
+        // parent-only send is the same boundary without delivery credit.
+        // Either way the external side effect exists, so another attempt
+        // could publish a duplicate.
+        isAttemptAllowed: () =>
+          isCompletionDeliveryAllowed() &&
+          !committedMessageToolDelivery &&
+          !parentOnlySourceSendLatched,
         run: async () => {
           if (!isCompletionDeliveryAllowed()) {
             throw new SourceOwnerChangedError();
@@ -1132,13 +1316,27 @@ async function sendSubagentAnnounceDirectly(params: {
                 : undefined,
             expectFinal: true,
             timeoutMs: announceTimeoutMs,
+            signal: params.signal,
+            onDeliveredMessageToolOnlySourceReply:
+              !parentOnlyExternalCompletion && requiresMessageToolDelivery
+                ? commitMessageToolSourceDelivery
+                : undefined,
+            onCommittedMessagingToolSend: parentOnlyExternalCompletion
+              ? latchParentOnlySourceSend
+              : undefined,
           });
         },
       });
-      if (!isCompletionDeliveryAllowed()) {
-        return sourceOwnerChangedResult();
-      }
     } catch (err) {
+      if (committedMessageToolDelivery) {
+        return committedMessageToolDelivery;
+      }
+      if (parentOnlySourceSendLatched) {
+        // The send committed before the turn settled. Never rethrow into a
+        // path that could redeliver; report the unverified send as
+        // ambiguous so reconciliation waits for a source-matched receipt.
+        return parentOnlyLatchedAmbiguousResult();
+      }
       if (err instanceof SourceOwnerChangedError) {
         return sourceOwnerChangedResult();
       }
@@ -1162,8 +1360,33 @@ async function sendSubagentAnnounceDirectly(params: {
       throw err;
     }
 
+    if (committedMessageToolDelivery) {
+      return committedMessageToolDelivery;
+    }
+
+    if (!isCompletionDeliveryAllowed()) {
+      return sourceOwnerChangedResult();
+    }
+
     const directAnnounceStillPending = isGatewayAgentRunPending(directAnnounceResponse);
     if (directAnnounceStillPending) {
+      // Parent-only completion routing has no external direct-delivery fallback.
+      // An accepted/in-flight requester turn is not proof that it will publish
+      // through the message tool, so do not durably credit it as delivered or
+      // let a fallback create a duplicate while that turn is still running.
+      if (
+        parentOnlySourceSendLatched ||
+        (parentOnlyExternalCompletion && params.expectsCompletionMessage)
+      ) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "visible_reply_missing",
+          error: "parent-only completion is still in flight; delivery is not yet verified",
+          terminal: true,
+          disposition: "ambiguous",
+        };
+      }
       return {
         delivered: true,
         path: "direct",
@@ -1171,6 +1394,22 @@ async function sendSubagentAnnounceDirectly(params: {
     }
 
     const directAnnounceResult = getGatewayAgentResult(directAnnounceResponse);
+    const hasMessagingToolDelivery = Boolean(
+      directAnnounceResult &&
+      hasMessagingToolDeliveryToSource(
+        directAnnounceResult,
+        messagingDeliveryTarget,
+        parentOnlyExternalCompletion ? { requireExplicitTarget: true } : undefined,
+      ),
+    );
+    // A latched parent-only send that settled without a source-matched receipt
+    // is an unverified external side effect. Classify it terminally as
+    // ambiguous BEFORE any generic delivery-failure or required-no-output
+    // handling: a retryable or permanent_failure disposition here could let a
+    // cleanup retry republish the committed send.
+    if (parentOnlySourceSendLatched && !hasMessagingToolDelivery) {
+      return parentOnlyLatchedAmbiguousResult("the settled turn has no source-matched receipt");
+    }
     const directDeliveryFailure =
       (shouldDeliverAgentFinal || requiresMessageToolDelivery) && directAnnounceResult
         ? getAgentCommandDeliveryFailure(directAnnounceResult)
@@ -1185,10 +1424,6 @@ async function sendSubagentAnnounceDirectly(params: {
           : {}),
       };
     }
-    const hasMessagingToolDelivery = Boolean(
-      directAnnounceResult &&
-      hasMessagingToolDeliveryToSource(directAnnounceResult, deliveryTarget),
-    );
     const completionPayloadVisibility = {
       includeErrorPayloads: false,
       includeReasoningPayloads: false,
@@ -1208,8 +1443,17 @@ async function sendSubagentAnnounceDirectly(params: {
     const hasIntentionalSilentCompletionReply = Boolean(
       directAnnounceResult && hasIntentionalSilentAgentPayload(directAnnounceResult),
     );
+    const directAnnounceSourceReplyEvidence = directAnnounceResult as
+      | (typeof directAnnounceResult & {
+          didDeliverSourceReplyViaMessageTool?: unknown;
+          messagingToolSourceReplyPayloads?: unknown;
+        })
+      | undefined;
     const hasCompletionSideEffect = Boolean(
-      directAnnounceResult && hasCommittedOutboundDeliveryEvidence(directAnnounceResult),
+      directAnnounceResult &&
+      (hasCommittedOutboundDeliveryEvidence(directAnnounceResult) ||
+        (directAnnounceSourceReplyEvidence &&
+          hasCommittedSourceReplyDeliveryEvidence(directAnnounceSourceReplyEvidence))),
     );
     const hasVisibleRequiredCompletionReply =
       hasMessagingToolDelivery ||
@@ -1279,7 +1523,7 @@ async function sendSubagentAnnounceDirectly(params: {
     const hasVisibleCompletionReply = Boolean(
       directAnnounceResult &&
       ((params.requireVisibleReply
-        ? hasMessagingToolDeliveryToSource(directAnnounceResult, deliveryTarget, {
+        ? hasMessagingToolDeliveryToSource(directAnnounceResult, messagingDeliveryTarget, {
             requireFinalReply: true,
           })
         : hasMessagingToolDelivery) ||
@@ -1305,12 +1549,48 @@ async function sendSubagentAnnounceDirectly(params: {
           (!params.requireVisibleReply ||
             directAnnounceResult.deliveryStatus?.status !== "suppressed"))),
     );
+    const hasUnsafeCompletionSideEffect = Boolean(
+      directAnnounceResult &&
+      parentOnlyExternalCompletion &&
+      hasUnverifiableOrOffTargetSideEffect(
+        directAnnounceSourceReplyEvidence ?? directAnnounceResult,
+        messagingDeliveryTarget,
+      ),
+    );
+    if (
+      params.expectsCompletionMessage &&
+      parentOnlyExternalCompletion &&
+      (hasUnsafeCompletionSideEffect || (!hasMessagingToolDelivery && hasCompletionSideEffect))
+    ) {
+      return {
+        delivered: false,
+        path: "direct",
+        reason: "visible_reply_missing",
+        error:
+          "parent-only completion committed an outbound side effect without a source-matched receipt",
+        terminal: true,
+        disposition: "ambiguous",
+      };
+    }
+    if (
+      params.expectsCompletionMessage &&
+      parentOnlyExternalCompletion &&
+      !hasMessagingToolDelivery
+    ) {
+      return {
+        delivered: false,
+        path: "direct",
+        reason: "visible_reply_missing",
+        error: "parent-only completion must publish via the message tool",
+      };
+    }
     const acceptsIntentionalSilentCompletion =
       hasIntentionalSilentCompletionReply && !isSubagentCompletion;
     if (
       !hasVisibleCompletionReply &&
       (params.requireVisibleReply ||
         (params.expectsCompletionMessage &&
+          !parentOnly &&
           !shouldDeliverAgentFinal &&
           !requiresMessageToolDelivery &&
           !hasCompletionSideEffect &&
@@ -1377,6 +1657,10 @@ export async function deliverSubagentAnnouncement(params: {
   targetRequesterSessionKey: string;
   requesterIsSubagent: boolean;
   expectsCompletionMessage: boolean;
+  announceTarget?: SubagentAnnounceTarget;
+  /** A vanished nested parent fell back to a top-level ancestor. Keep the result
+   * in that session, but uphold the child's parent-only no-external-send promise. */
+  parentOnlyFallbackRetargetedToTopLevel?: boolean;
   requireDirectDelivery?: boolean;
   requireVisibleReply?: boolean;
   bestEffortDeliver?: boolean;
@@ -1388,7 +1672,17 @@ export async function deliverSubagentAnnouncement(params: {
   if (sourceOwnerChanged()) {
     return sourceOwnerChangedResult();
   }
+  const parentOnlyExternalCompletion =
+    params.announceTarget === "parent" &&
+    !params.requesterIsSubagent &&
+    !params.parentOnlyFallbackRetargetedToTopLevel;
+  const parentOnlySessionInternal =
+    parentOnlyExternalCompletion || params.parentOnlyFallbackRetargetedToTopLevel;
+  // Parent-only completions (external or fallback-retargeted internal) may only
+  // be published by the parent's message tool; never open a durable external
+  // media route for them.
   const durableGeneratedMediaHandoff =
+    !parentOnlySessionInternal &&
     params.expectsCompletionMessage &&
     isAgentMediatedCompletionSourceTool(params.sourceTool) &&
     hasGeneratedMediaCompletionEvent(params.internalEvents);
@@ -1511,6 +1805,12 @@ export async function deliverSubagentAnnouncement(params: {
         steerMessage: params.steerMessage,
         signal: params.signal,
         isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
+        ...(parentOnlySessionInternal
+          ? {
+              sourceReplyDeliveryMode: "message_tool_only" as const,
+              allowSourceReplyDeliveryModeFallback: false,
+            }
+          : {}),
       });
     },
     direct: async () => {
@@ -1532,6 +1832,10 @@ export async function deliverSubagentAnnouncement(params: {
         isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
         isCompletionOwnedByRequesterYield: params.isCompletionOwnedByRequesterYield,
         requesterIsSubagent: params.requesterIsSubagent,
+        announceTarget: params.announceTarget,
+        ...(params.parentOnlyFallbackRetargetedToTopLevel
+          ? { parentOnlyFallbackRetargetedToTopLevel: true }
+          : {}),
         expectsCompletionMessage: params.expectsCompletionMessage,
         requireVisibleReply: params.requireVisibleReply,
         onDeliveryResult: params.onDeliveryResult,

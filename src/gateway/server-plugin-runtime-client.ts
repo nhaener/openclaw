@@ -20,6 +20,8 @@ export function createSyntheticPluginRuntimeClient(params?: {
   cronRunContinuation?: boolean;
   internalDeliveryMediaUrls?: string[];
   internalDeliverySuppressText?: boolean;
+  onDeliveredMessageToolOnlySourceReply?: () => void;
+  onCommittedMessagingToolSend?: () => void;
   pluginRuntimeOwnerId?: string;
   pluginSubagentRequester?: PluginSubagentRequesterContext;
   runtimePluginToolGrant?: RuntimePluginToolGrant;
@@ -55,6 +57,16 @@ export function createSyntheticPluginRuntimeClient(params?: {
         : {}),
       ...(params?.internalDeliverySuppressText === true
         ? { internalDeliverySuppressText: true }
+        : {}),
+      ...(params?.onDeliveredMessageToolOnlySourceReply
+        ? {
+            onDeliveredMessageToolOnlySourceReply: params.onDeliveredMessageToolOnlySourceReply,
+          }
+        : {}),
+      ...(params?.onCommittedMessagingToolSend
+        ? {
+            onCommittedMessagingToolSend: params.onCommittedMessagingToolSend,
+          }
         : {}),
       ...(params?.scopes?.includes(APPROVALS_SCOPE) ? { approvalRuntime: true } : {}),
       ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),

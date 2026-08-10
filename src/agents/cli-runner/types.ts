@@ -145,6 +145,10 @@ export type RunCliAgentParams = {
   jobId?: string;
   extraSystemPrompt?: string;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  /** Trusted run-owned observer for a committed message-tool-only source reply. */
+  onDeliveredMessageToolOnlySourceReply?: () => void;
+  /** Trusted run-owned observer for any committed messaging-tool send. */
+  onCommittedMessagingToolSend?: () => void;
   taskSuggestionDeliveryMode?: TaskSuggestionDeliveryMode;
   requireExplicitMessageTarget?: boolean;
   silentReplyPromptMode?: SilentReplyPromptMode;

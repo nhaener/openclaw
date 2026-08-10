@@ -782,6 +782,84 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).not.toHaveBeenCalled();
   });
 
+  it("routes a mixed parent-only batch as an internal parent-only wake", async () => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
+      makeSettledChild({
+        runId: "run-b",
+        announceTarget: "parent",
+        completion: { required: true, resultText: "parent-only findings" },
+      }),
+      makeSettledChild({
+        runId: "run-a",
+        completion: { required: true, resultText: "default findings" },
+      }),
+    ]);
+
+    const woke = await maybeWakeRequesterAfterAllChildrenSettled(wakeParams());
+
+    expect(woke).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+    const call = deliveredCallArg();
+    // Any parent-only member forces the whole consolidated wake internal so a
+    // parent-only child result can never be auto-published externally.
+    expect(call.announceTarget).toBe("parent");
+    // The parent must still produce a visible reply so default siblings reach
+    // the user via an explicit publish rather than an auto external final.
+    expect(call.requireVisibleReply).toBe(true);
+    expect(call.expectsCompletionMessage).toBe(false);
+    expect(call.requireDirectDelivery).toBe(true);
+    const message = String(call.triggerMessage);
+    expect(message).toContain("parent-only findings");
+    expect(message).toContain("default findings");
+    expect(message).toContain("visible final answer");
+  });
+
+  it("keeps a pure parent-only batch internal", async () => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
+      makeSettledChild({
+        runId: "run-b",
+        announceTarget: "parent",
+        completion: { required: true, resultText: "alpha" },
+      }),
+      makeSettledChild({
+        runId: "run-a",
+        announceTarget: "parent",
+        completion: { required: true, resultText: "beta" },
+      }),
+    ]);
+
+    const woke = await maybeWakeRequesterAfterAllChildrenSettled(wakeParams());
+
+    expect(woke).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+    const call = deliveredCallArg();
+    expect(call.announceTarget).toBe("parent");
+    expect(call.requireVisibleReply).toBe(true);
+  });
+
+  it("leaves a default batch externally deliverable", async () => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
+      makeSettledChild({
+        runId: "run-b",
+        completion: { required: true, resultText: "one" },
+      }),
+      makeSettledChild({
+        runId: "run-a",
+        completion: { required: true, resultText: "two" },
+      }),
+    ]);
+
+    const woke = await maybeWakeRequesterAfterAllChildrenSettled(wakeParams());
+
+    expect(woke).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+    const call = deliveredCallArg();
+    // Missing announceTarget is legacy default: no parent-only routing, external
+    // delivery unchanged (byte-for-byte with pre-feature behavior).
+    expect(call.announceTarget).toBeUndefined();
+    expect(call.requireVisibleReply).toBeUndefined();
+  });
+
   describe("restart-persistent outbox", () => {
     it("keeps an earlier delete row pending across restart before the final settle", async () => {
       const childA = makeSettledChild({

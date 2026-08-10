@@ -797,6 +797,67 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("✅ Subagent");
   });
 
+  it("tells parent-only completion turns to publish explicitly", async () => {
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "reviewed result" }] }],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-parent-only-instruction",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      announceTarget: "parent",
+    });
+
+    const call = getAgentCall() as { params?: { message?: string } };
+    const msg = call?.params?.message ?? "";
+    expect(msg).toContain("This completion is parent-only");
+    expect(msg).toContain("Publish the completion explicitly with the message tool");
+    expect(msg).not.toContain(SILENT_REPLY_TOKEN);
+  });
+
+  it("requires explicit publication when parent-only completion joins an active turn", async () => {
+    sessionStore = {
+      "agent:main:main": { sessionId: "requester-active" },
+    };
+    embeddedRunMock.isEmbeddedAgentRunActive.mockReturnValue(true);
+    embeddedRunMock.queueEmbeddedAgentMessageWithOutcome.mockImplementation((sessionId) => ({
+      queued: true,
+      sessionId,
+      target: "embedded_run",
+      gatewayHealth: "live",
+      deliveredAtMs: Date.now(),
+    }));
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "reviewed result" }] }],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-parent-only-active",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      announceTarget: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).not.toHaveBeenCalled();
+    const queuedMessage = embeddedRunMock.queueEmbeddedAgentMessageWithOutcome.mock.calls[0]?.[1];
+    expect(queuedMessage).toContain("This completion is parent-only");
+    expect(queuedMessage).toContain("Publish the completion explicitly with the message tool");
+    expect(queuedMessage).not.toContain(SILENT_REPLY_TOKEN);
+    expect(queuedMessage).not.toContain("otherwise send a truthful user-facing update");
+  });
+
   it("keeps completion delivery enabled for extension channels captured from requester origin", async () => {
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:test",

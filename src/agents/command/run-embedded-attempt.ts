@@ -9,10 +9,6 @@ import {
   isModelSelectionLocked,
 } from "../../sessions/model-overrides.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
-import {
-  getGeneratedMediaTaskIdsForSessionKey,
-  hasNewGeneratedMediaTaskForSessionKey,
-} from "../../tasks/task-status-access.js";
 import { createTrajectoryRuntimeRecorder } from "../../trajectory/runtime.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -51,6 +47,7 @@ import {
   type AgentAttemptLifecycleState,
 } from "./attempt-callbacks.js";
 import { createAgentCommandLifecycle } from "./lifecycle.js";
+import { createMessageToolCommitObservers } from "./message-tool-commit-observers.js";
 import { normalizeAgentCommandModelRef } from "./model-ref.js";
 import type { EmbeddedModelSelection } from "./model-selection.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
@@ -227,12 +224,11 @@ export async function runEmbeddedAgentAttempt(params: {
     modelId: model,
     workspaceDir,
   });
+  const messageToolCommitObservers = createMessageToolCommitObservers(params.opts);
   let liveSwitchMediaTaskIds: ReadonlySet<string> = new Set();
   for (;;) {
     try {
-      liveSwitchMediaTaskIds = sessionKey
-        ? getGeneratedMediaTaskIdsForSessionKey(sessionKey)
-        : new Set<string>();
+      liveSwitchMediaTaskIds = messageToolCommitObservers.getMediaTaskIds(sessionKey);
       const spawnedBy = normalizedSpawned.spawnedBy ?? sessionEntry?.spawnedBy;
       const effectiveFallbacksOverride = isModelSelectionLocked(sessionEntry)
         ? []
@@ -252,10 +248,8 @@ export async function runEmbeddedAgentAttempt(params: {
       const fallbackRuntimeState: { originRuntime?: "cli" | "embedded" } = {};
       attemptLifecycleState.currentTurnUserMessagePersisted = false;
       let attemptMediaTaskIds = liveSwitchMediaTaskIds;
-      const currentAttemptCommittedCronMedia = () =>
-        Boolean(
-          sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
-        );
+      const currentAttemptCommittedSideEffect = () =>
+        messageToolCommitObservers.hasCommittedSideEffect(sessionKey, attemptMediaTaskIds);
       const fallbackResult = await runEmbeddedAgentEntry<AgentAttemptResult>({
         selection: {
           cfg,
@@ -289,7 +283,7 @@ export async function runEmbeddedAgentAttempt(params: {
         },
         behavior: {
           kind: "command-rpc",
-          hasCommittedSideEffect: currentAttemptCommittedCronMedia,
+          hasCommittedSideEffect: currentAttemptCommittedSideEffect,
         },
         sessionOverride: {
           kind: "reconcile-completed",
@@ -330,9 +324,7 @@ export async function runEmbeddedAgentAttempt(params: {
           fallbackTrajectoryRecorder?.recordEvent("model.fallback_step", step);
         },
         runCandidate: async (providerOverride, modelOverride, runOptions) => {
-          attemptMediaTaskIds = sessionKey
-            ? getGeneratedMediaTaskIdsForSessionKey(sessionKey)
-            : new Set<string>();
+          attemptMediaTaskIds = messageToolCommitObservers.getMediaTaskIds(sessionKey);
           attemptLifecycleState.lifecycleError = undefined;
           attemptLifecycleState.lifecycleFinishing = false;
           attemptLifecycleState.lifecycleEnded = false;
@@ -474,7 +466,7 @@ export async function runEmbeddedAgentAttempt(params: {
             runTimeoutOverrideMs,
             runId,
             lifecycleGeneration,
-            opts: params.opts,
+            opts: messageToolCommitObservers.withLatches(),
             runContext,
             spawnedBy,
             messageChannel,
@@ -554,10 +546,7 @@ export async function runEmbeddedAgentAttempt(params: {
           await fallbackTrajectoryRecorder?.flush();
           throw new ModelSelectionLockedError();
         }
-        if (
-          sessionKey &&
-          hasNewGeneratedMediaTaskForSessionKey(sessionKey, liveSwitchMediaTaskIds)
-        ) {
+        if (messageToolCommitObservers.hasCommittedSideEffect(sessionKey, liveSwitchMediaTaskIds)) {
           throw err;
         }
         liveSwitchRetries += 1;

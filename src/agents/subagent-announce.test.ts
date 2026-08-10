@@ -55,7 +55,9 @@ const { subagentRegistryRuntimeMock } = vi.hoisted(() => ({
     countPendingDescendantRunsExcludingRun: vi.fn(() => 0),
     listSubagentRunsForRequester: vi.fn(() => []),
     replaceSubagentRunAfterSteer: vi.fn(() => true),
-    resolveRequesterForChildSession: vi.fn(() => null),
+    resolveRequesterForChildSession: vi.fn(
+      (): { requesterSessionKey: string; requesterOrigin?: unknown } | null => null,
+    ),
   },
 }));
 
@@ -95,11 +97,16 @@ vi.mock("./subagent-announce-delivery.runtime.js", () =>
   }),
 );
 
+const deliveryReportState = vi.hoisted(() => ({
+  sequence: undefined as Array<Record<string, unknown>> | undefined,
+}));
+
 vi.mock("./subagent-announce-delivery.js", () => ({
   deliverSubagentAnnouncement: async (params: {
     targetRequesterSessionKey: string;
     triggerMessage: string;
     requesterIsSubagent?: boolean;
+    parentOnlyFallbackRetargetedToTopLevel?: boolean;
     requesterOrigin?: { channel?: string; to?: string; accountId?: string; threadId?: string };
     completionDirectOrigin?: {
       channel?: string;
@@ -111,7 +118,18 @@ vi.mock("./subagent-announce-delivery.js", () => ({
     requesterSessionOrigin?: { provider?: string; channel?: string };
     bestEffortDeliver?: boolean;
     isSourceSessionEffectsAllowed?: () => boolean;
+    onDeliveryResult?: (delivery: Record<string, unknown>) => void;
   }) => {
+    if (deliveryReportState.sequence) {
+      const sequence = deliveryReportState.sequence;
+      deliveryReportState.sequence = undefined;
+      let last: Record<string, unknown> | undefined;
+      for (const report of sequence) {
+        params.onDeliveryResult?.(report);
+        last = report;
+      }
+      return last;
+    }
     if (params.isSourceSessionEffectsAllowed?.() === false) {
       return {
         delivered: false,
@@ -153,6 +171,7 @@ vi.mock("./subagent-announce-delivery.js", () => ({
         message: params.triggerMessage,
         deliver:
           !params.requesterIsSubagent &&
+          !params.parentOnlyFallbackRetargetedToTopLevel &&
           effectiveOrigin?.channel !== "webchat" &&
           Boolean(effectiveOrigin?.channel && effectiveOrigin?.to),
         bestEffortDeliver: params.bestEffortDeliver,
@@ -669,6 +688,109 @@ describe("subagent announce seam flow", () => {
     expect(agentCall.params?.to).toBe("-1001234567890");
   });
 
+  it("keeps a parent-only fallback to an internal subagent ancestor internal", async () => {
+    loadSessionStoreMock.mockReturnValue({
+      "agent:main:subagent:parent": { sessionId: "" },
+    });
+    subagentRegistryRuntimeMock.isSubagentSessionRunActive.mockReturnValue(false);
+    subagentRegistryRuntimeMock.resolveRequesterForChildSession.mockReturnValue({
+      requesterSessionKey: "agent:main:subagent:ancestor",
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:child",
+      childRunId: "run-parent-only-fallback-internal",
+      requesterSessionKey: "agent:main:subagent:parent",
+      requesterDisplayKey: "parent",
+      task: "nested task",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      roundOneReply: "done",
+      announceTarget: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(requireAgentCall().params).toMatchObject({
+      sessionKey: "agent:main:subagent:ancestor",
+      deliver: false,
+    });
+  });
+
+  it("keeps a parent-only fallback to a top-level ancestor session-internal", async () => {
+    loadSessionStoreMock.mockReturnValue({
+      "agent:main:subagent:parent": { sessionId: "" },
+    });
+    subagentRegistryRuntimeMock.isSubagentSessionRunActive.mockReturnValue(false);
+    subagentRegistryRuntimeMock.resolveRequesterForChildSession.mockReturnValue({
+      requesterSessionKey: "agent:main:main",
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:child",
+      childRunId: "run-parent-only-fallback-top-level",
+      requesterSessionKey: "agent:main:subagent:parent",
+      requesterDisplayKey: "parent",
+      requesterOrigin: { channel: "slack", to: "C123" },
+      task: "nested task",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      roundOneReply: "done",
+      announceTarget: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(requireAgentCall().params).toMatchObject({
+      sessionKey: "agent:main:main",
+      deliver: false,
+    });
+    expect(requireAgentCall().params?.message).toContain("concise internal orchestration update");
+    expect(requireAgentCall().params?.message).not.toContain(
+      "Publish the completion explicitly with the message tool",
+    );
+  });
+
+  it("preserves external delivery for a non-parent top-level fallback", async () => {
+    loadSessionStoreMock.mockReturnValue({
+      "agent:main:subagent:parent": { sessionId: "" },
+    });
+    subagentRegistryRuntimeMock.isSubagentSessionRunActive.mockReturnValue(false);
+    subagentRegistryRuntimeMock.resolveRequesterForChildSession.mockReturnValue({
+      requesterSessionKey: "agent:main:main",
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:child",
+      childRunId: "run-default-fallback-top-level",
+      requesterSessionKey: "agent:main:subagent:parent",
+      requesterDisplayKey: "parent",
+      requesterOrigin: { channel: "slack", to: "C123" },
+      task: "nested task",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+      roundOneReply: "done",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(requireAgentCall().params).toMatchObject({
+      sessionKey: "agent:main:main",
+      deliver: true,
+      channel: "slack",
+      to: "C123",
+    });
+  });
+
   it("logs direct completion announce delivery failures through the gateway log path", async () => {
     const logSpy = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
     agentSpy.mockResolvedValueOnce({ status: "error", error: "Outbound not configured for slack" });
@@ -745,5 +867,96 @@ describe("subagent announce seam flow", () => {
       error: "prompt lock failed after visible send",
       disposition: "ambiguous",
     });
+  });
+
+  it("lets only settled terminal results upgrade a provisional ambiguous fence", async () => {
+    const ambiguousFence = {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error:
+        "parent-only completion committed a message-tool send but the turn has not settled yet; delivery is not verified",
+      terminal: true,
+      disposition: "ambiguous",
+    };
+    const delivered = { delivered: true, path: "direct" };
+    const permanent = {
+      delivered: false,
+      path: "direct",
+      terminal: true,
+      disposition: "permanent_failure",
+    };
+    const intentionalNonDelivery = {
+      delivered: false,
+      path: "none",
+      terminal: true,
+      disposition: "intentional_non_delivery",
+    };
+    const retryable = { delivered: false, path: "direct", disposition: "retryable" };
+    const undefinedDisposition = { delivered: false, path: "direct" };
+    const cases = [
+      {
+        label: "ambiguous fence upgrades to verified delivery",
+        sequence: [ambiguousFence, delivered],
+        expected: [ambiguousFence, delivered],
+      },
+      {
+        label: "ambiguous fence upgrades to permanent failure",
+        sequence: [ambiguousFence, permanent],
+        expected: [ambiguousFence, permanent],
+      },
+      {
+        label: "ambiguous fence upgrades to intentional non-delivery",
+        sequence: [ambiguousFence, intentionalNonDelivery],
+        expected: [ambiguousFence, intentionalNonDelivery],
+      },
+      {
+        label: "retryable settled result must not erase the fence",
+        sequence: [ambiguousFence, retryable],
+        expected: [ambiguousFence],
+      },
+      {
+        label: "undefined-disposition settled result must not erase the fence",
+        sequence: [ambiguousFence, undefinedDisposition],
+        expected: [ambiguousFence],
+      },
+      {
+        label: "delivered is never downgraded to ambiguous",
+        sequence: [delivered, ambiguousFence],
+        expected: [delivered],
+      },
+      {
+        label: "delivered is never replaced by a later terminal result",
+        sequence: [delivered, permanent],
+        expected: [delivered],
+      },
+    ];
+    for (const [index, testCase] of cases.entries()) {
+      const reports: Array<Record<string, unknown>> = [];
+      deliveryReportState.sequence = testCase.sequence;
+      await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:slack",
+        childRunId: `run-upgrade-guard-${index}`,
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        requesterOrigin: {
+          channel: "slack",
+          to: "C123",
+        },
+        task: "deliver completion",
+        timeoutMs: 10,
+        cleanup: "keep",
+        waitForCompletion: false,
+        startedAt: 10,
+        endedAt: 20,
+        outcome: { status: "ok" },
+        roundOneReply: "done",
+        expectsCompletionMessage: true,
+        onDeliveryResult: (delivery) => {
+          reports.push(delivery as unknown as Record<string, unknown>);
+        },
+      });
+      expect(reports, testCase.label).toEqual(testCase.expected);
+    }
   });
 });

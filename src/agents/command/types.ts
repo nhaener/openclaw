@@ -157,6 +157,10 @@ export type AgentCommandOpts = {
   preserveUserFacingSessionModelState?: boolean;
   /** Visible source replies must be sent through the message tool when set. */
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  /** Trusted in-process observer fired after a message-tool-only source reply commits. */
+  onDeliveredMessageToolOnlySourceReply?: () => void;
+  /** Trusted in-process observer fired after any messaging-tool send commits. */
+  onCommittedMessagingToolSend?: () => void;
   /** Internal runs can omit the channel message tool entirely. */
   disableMessageTool?: boolean;
   /** Collector children fail closed instead of emitting operator approval requests. */
@@ -221,7 +225,11 @@ export type AgentCommandOpts = {
 /** Restricted option surface for external ingress callsites. */
 export type AgentCommandIngressOpts = Omit<
   AgentCommandOpts,
-  "senderIsOwner" | "allowModelOverride" | "executionIdentityAdmission"
+  | "senderIsOwner"
+  | "allowModelOverride"
+  | "executionIdentityAdmission"
+  | "onDeliveredMessageToolOnlySourceReply"
+  | "onCommittedMessagingToolSend"
 > & {
   /** Trusted sender identity bit for command/channel-action auth; defaults false for ingress. */
   senderIsOwner?: boolean;
@@ -231,4 +239,9 @@ export type AgentCommandIngressOpts = Omit<
 
 /** Gateway-only ingress extends the public Plugin SDK surface with private recovery correlation. */
 export type AgentCommandGatewayIngressOpts = AgentCommandIngressOpts &
-  Pick<AgentCommandOpts, "executionIdentityAdmission">;
+  Pick<
+    AgentCommandOpts,
+    | "executionIdentityAdmission"
+    | "onDeliveredMessageToolOnlySourceReply"
+    | "onCommittedMessagingToolSend"
+  >;

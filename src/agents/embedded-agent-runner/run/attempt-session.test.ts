@@ -49,7 +49,7 @@ vi.mock("../../tool-search.js", () => ({
 vi.mock("../extensions.js", () => ({
   buildEmbeddedExtensionFactories: hoisted.buildEmbeddedExtensionFactories,
 }));
-vi.mock("../logger.js", () => ({ log: { info: vi.fn() } }));
+vi.mock("../logger.js", () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
 vi.mock("../resource-loader.js", () => ({
   createEmbeddedAgentResourceLoader: hoisted.createEmbeddedAgentResourceLoader,
 }));
@@ -199,6 +199,11 @@ beforeEach(() => {
 describe("prepareEmbeddedAttemptAgentSession", () => {
   it("prepares resources and publishes the activated session runtime", async () => {
     const fixture = createInput();
+    const onDeliveredMessageToolOnlySourceReply = vi.fn();
+    fixture.input.attempt = {
+      ...fixture.input.attempt,
+      onDeliveredMessageToolOnlySourceReply,
+    };
 
     const result = await prepareEmbeddedAttemptAgentSession(fixture.input);
 
@@ -241,6 +246,25 @@ describe("prepareEmbeddedAttemptAgentSession", () => {
     expect(result.hasDeliveredSourceReply()).toBe(false);
     fixture.onDeliveredSourceReply();
     expect(result.hasDeliveredSourceReply()).toBe(true);
+    fixture.onDeliveredSourceReply();
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
+  });
+
+  it("isolates a source-delivery observer failure after the send commits", async () => {
+    const fixture = createInput();
+    const onDeliveredMessageToolOnlySourceReply = vi.fn(() => {
+      throw new Error("accounting unavailable");
+    });
+    fixture.input.attempt = {
+      ...fixture.input.attempt,
+      onDeliveredMessageToolOnlySourceReply,
+    };
+
+    const result = await prepareEmbeddedAttemptAgentSession(fixture.input);
+
+    expect(() => fixture.onDeliveredSourceReply()).not.toThrow();
+    expect(result.hasDeliveredSourceReply()).toBe(true);
+    expect(onDeliveredMessageToolOnlySourceReply).toHaveBeenCalledOnce();
   });
 
   it("does not install Code Mode repair when the run kept direct tools", async () => {

@@ -966,6 +966,9 @@ export function runAgentAttempt(params: {
             extraSystemPrompt: params.opts.extraSystemPrompt,
             inputProvenance: params.opts.inputProvenance,
             sourceReplyDeliveryMode: params.opts.sourceReplyDeliveryMode,
+            onDeliveredMessageToolOnlySourceReply:
+              params.opts.onDeliveredMessageToolOnlySourceReply,
+            onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend,
             requireExplicitMessageTarget:
               params.opts.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
             cliSessionBindingFacts: params.opts.cliSessionBindingFacts,
@@ -1219,6 +1222,8 @@ export function runAgentAttempt(params: {
     internalEvents: params.opts.internalEvents,
     inputProvenance: params.opts.inputProvenance,
     sourceReplyDeliveryMode: params.opts.sourceReplyDeliveryMode,
+    onDeliveredMessageToolOnlySourceReply: params.opts.onDeliveredMessageToolOnlySourceReply,
+    onCommittedMessagingToolSend: params.opts.onCommittedMessagingToolSend,
     requireExplicitMessageTarget: params.opts.requireExplicitMessageTarget,
     disableMessageTool: params.opts.disableMessageTool,
     swarmCollector: params.opts.swarmCollector,

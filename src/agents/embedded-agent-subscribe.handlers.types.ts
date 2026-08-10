@@ -333,6 +333,7 @@ type ToolHandlerParams = Pick<
   | "toolProgressDetail"
   | "sourceReplyDeliveryMode"
   | "onDeliveredMessageToolOnlySourceReply"
+  | "onCommittedMessagingToolSend"
 >;
 
 type ToolHandlerState = Pick<

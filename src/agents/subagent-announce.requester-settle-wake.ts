@@ -334,6 +334,14 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
     return false;
   }
 
+  // Whole-batch parent-only suppression: if ANY settled member opted into
+  // announceTarget:"parent", the consolidated wake must never publish
+  // externally. Missing/other announceTarget = legacy default (do not treat as
+  // parent-only), so pure-default batches stay byte-for-byte unchanged.
+  const batchHasParentOnlyMember = settledBatch.some((entry) => entry.announceTarget === "parent");
+  // A parent-only consolidated wake stays internal (deliver:false); the parent
+  // must still produce a visible reply so default siblings reach the user.
+  const settleWakeRequiresVisibleReply = requesterYieldedAfterDelivery || batchHasParentOnlyMember;
   const findings = buildChildCompletionFindings(
     dedupeLatestChildCompletionRows(
       filterCurrentDirectChildCompletionRows(settledBatch, {
@@ -345,7 +353,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
   );
   const wakeMessage = buildRequesterSettleWakeMessage({
     findings,
-    requireVisibleReply: requesterYieldedAfterDelivery,
+    requireVisibleReply: settleWakeRequiresVisibleReply,
   });
   const requesterSessionOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const directOrigin = resolveAnnounceOrigin(requesterEntry, requesterSessionOrigin);
@@ -429,7 +437,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         requesterIsSubagent: false,
         expectsCompletionMessage: false,
         requireDirectDelivery: true,
-        ...(requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
+        ...(batchHasParentOnlyMember ? { announceTarget: "parent" as const } : {}),
+        ...(settleWakeRequiresVisibleReply ? { requireVisibleReply: true } : {}),
         directIdempotencyKey: buildAnnounceIdempotencyKey(
           attemptIndex === 0 ? wakeKeyBase : `${wakeKeyBase}:retry-${attemptIndex}`,
         ),

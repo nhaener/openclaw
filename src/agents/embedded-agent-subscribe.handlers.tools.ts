@@ -1634,6 +1634,9 @@ export async function handleToolExecutionEnd(
       hookResult: toolSendReceiptResult,
       isError: isToolError,
     });
+  if (didDeliverMessagingResult && isMessagingSend) {
+    ctx.params.onCommittedMessagingToolSend?.();
+  }
   const messageText = isMessagingSend ? readMessagingText(startArgs) : undefined;
   const argumentMediaUrls = isMessagingSend ? collectMessagingMediaUrlsFromRecord(startArgs) : [];
   const hasRichContent = isMessagingSend && hasMessagingRichContent(startArgs);
